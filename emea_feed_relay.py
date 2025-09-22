@@ -263,25 +263,40 @@ def dedupe_and_sort(items: List[Item], max_items: int) -> List[Item]:
     return out
 
 
-def build_feed(items: List[Item], title: str, homepage: str) -> str:
+def build_feed(items: List[Item], title: str, homepage: str, replay: int = 0, reseed: str = "") -> str:
     fg = FeedGenerator()
     fg.title(title)
     fg.link(href=homepage, rel='alternate')
     fg.description('Merged & filtered EMEA alerts (security, unrest, weather, transport)')
     fg.language('en')
-    fg.updated(datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    fg.updated(now)
 
-    for it in items:
+    # If replay > 0, force the newest N items to look "new" by updating pubDate and GUID
+    for idx, it in enumerate(items):
         fe = fg.add_entry()
-        # Prefix title with tier/urgency marker so Slack readers can scan fast
-        prefix = "🚨" if it.urgent else ("🛰️" if it.tier == "tier1" else ("🧭" if it.tier == "tier2" else "🧩"))
-        fe.title(f"{prefix} [{it.tier.upper()}] {it.title}")
+        prefix = "🚨" if it.urgent else ("1️⃣" if it.tier == "tier1" else ("2️⃣" if it.tier == "tier2" else "3️⃣"))
+        labels = {"tier1": "Priority 1 - Investigate", "tier2": "Priority 2 - FYSA", "tier3": "Priority 3 - FYSA"}
+label = labels.get(it.tier, it.tier.upper())
+fe.title(f"{prefix} {label}: {it.title}")
         fe.link(href=it.link)
         desc = it.summary
         if it.source:
             desc = f"<b>Source:</b> {html.escape(it.source)}<br/>" + desc
-        fe.description(desc[:2000])  # keep it reasonable
-        fe.pubDate(datetime.fromtimestamp(it.published_ts, tz=timezone.utc))
+        fe.description(desc[:2000])
+
+        is_replayed = idx < replay
+        if is_replayed:
+            bumped_time = now + timedelta(seconds=(replay - idx))
+            fe.pubDate(bumped_time)
+            guid_seed = reseed or now.strftime("%Y%m%d%H%M%S")
+            guid_hash = hashlib.sha256((it.title + '|' + it.link + '|' + guid_seed).encode('utf-8')).hexdigest()
+            fe.guid(guid_hash, permalink=False)
+        else:
+            fe.pubDate(datetime.fromtimestamp(it.published_ts, tz=timezone.utc))
+            guid_hash = hashlib.sha256((it.title + '|' + it.link).encode('utf-8')).hexdigest()
+            fe.guid(guid_hash, permalink=False)
+
     return fg.rss_str(pretty=True).decode('utf-8')
 
 
@@ -290,6 +305,8 @@ def main():
     ap.add_argument("--tiers", default="tier1,tier2", help="Comma list: tier1,tier2,tier3")
     ap.add_argument("--since-hours", type=int, default=0, help="Only include items newer than N hours (0=disabled)")
     ap.add_argument("--max-items", type=int, default=250, help="Cap total items in output feed")
+ap.add_argument("--replay", type=int, default=0, help="Force the newest N items to be treated as fresh (backfill into Slack)")
+ap.add_argument("--reseed", default="", help="Optional token to change GUIDs when replaying (e.g., a run id)")
     ap.add_argument("--output", default="emea-filtered.xml", help="Output RSS file path")
     ap.add_argument("--title", default="EMEA SOC Filtered Feed", help="Feed title")
     ap.add_argument("--homepage", default="https://example.org/emea-filtered", help="Feed link/homepage")
@@ -307,7 +324,7 @@ def main():
         all_items.extend(harvest(t, urls, since_hours=args.since_hours, force=args.force))
 
     final_items = dedupe_and_sort(all_items, max_items=args.max_items)
-    xml = build_feed(final_items, title=args.title, homepage=args.homepage)
+    xml = build_feed(final_items, title=args.title, homepage=args.homepage, replay=args.replay, reseed=args.reseed)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(xml)
     print(f"Wrote {args.output} with {len(final_items)} items")

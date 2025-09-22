@@ -3,7 +3,7 @@ name: Build and Publish RSS
 on:
   workflow_dispatch: {}         # allows manual runs
   schedule:
-    - cron: "0 * * * *"         # runs hourly
+    - cron: "*/15 * * * *"         # runs every 15 minutes
 
 permissions:
   contents: write

@@ -1,9 +1,9 @@
 name: Build and Publish RSS
 
 on:
-  workflow_dispatch: {}         # run by hand any time
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 * * * *"         # hourly (change later if you want)
+    - cron: "0 * * * *"   # hourly
 
 permissions:
   contents: read
@@ -23,6 +23,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install feedparser feedgen
+      # Ensure the folder exists and is never empty (prevents artifact errors)
+      - run: mkdir -p public && echo "ok" > public/index.html
       - run: python emea_feed_relay.py --output public/emea-filtered.xml --tiers tier1,tier2 --max-items 200
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,0 +1,42 @@
+name: Build and Publish RSS
+
+on:
+  workflow_dispatch: {}         # run by hand any time
+  schedule:
+    - cron: "0 * * * *"         # hourly (change later if you want)
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install feedparser feedgen
+      - run: python emea_feed_relay.py --output public/emea-filtered.xml --tiers tier1,tier2 --max-items 200
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

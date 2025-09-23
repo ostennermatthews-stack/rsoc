@@ -57,6 +57,26 @@ NEWS_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/europe/rss.xml?edition=int",
     "https://www.france24.com/en/tag/europe/rss",
     "https://www.euronews.com/rss?format=mrss&level=theme&name=news",
+
+    # — Israel —
+    "https://www.jpost.com/rss",
+    "https://www.timesofisrael.com/feed/",
+    "https://www.israelnationalnews.com/rss",
+
+    # — Switzerland —
+    "https://cdn.prod.swi-services.ch/rss/eng/rssxml/latest-news/rss",
+
+    # — Germany —
+    "https://rss.dw.com/rdf/rss-en-top",
+    "https://rss.dw.com/rdf/rss-en-all",
+
+    # — Qatar / Gulf —
+    # NOTE: the next two are index pages, not feed URLs.
+    # Commented out so feedparser doesn’t choke / return zero entries.
+    # "https://www.gulf-times.com/Rss/Index",
+    # "https://www.qna.org.qa/en/RSS-Feeds",
+
+    "https://www.arabnews.com/rss",
 ]
 
 ALERT_FEEDS = [

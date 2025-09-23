@@ -33,8 +33,8 @@ jobs:
       # (If your file is emea_feed_relay_v2.py, change the filename here.)
       - run: python emea_feed_relay.py --output public/emea-filtered.xml --tiers tier1,tier2 --max-items 200
 
-      # ⬇️ Build 24h Watchlist Top 5 (CSV, HTML, RSS, Job Summary)
-      - name: Build 24h Watchlist Top 5 (CSV, HTML, RSS, Job Summary)
+      # Build 24h Watchlist Top 5 (TITLES ONLY) + HTML + brief RSS + job summary
+      - name: Build 24h Watchlist Top 5 (titles only)
         run: |
           python - << 'PY'
           import re, csv, html, time, datetime as dt, feedparser, os
@@ -89,30 +89,24 @@ jobs:
 
           cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
           top5 = cands[:5]
-
           os.makedirs("public", exist_ok=True)
 
-          # CSV
-          csv_path = "public/watchlist_top5.csv"
-          with open(csv_path, "w", newline="", encoding="utf-8") as f:
+          # CSV (titles only)
+          with open("public/watchlist_top5.csv","w",newline="",encoding="utf-8") as f:
               w = csv.writer(f)
-              w.writerow(["Title","Link","Published","Score","Source"])
+              w.writerow(["Title"])
               for score, t_, e in top5:
-                  pub = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t_))
-                  src = getattr(getattr(e,'source',''), 'title', None) or getattr(e,'source','') or ""
-                  w.writerow([getattr(e,'title',''), getattr(e,'link',''), pub, score, src])
+                  w.writerow([getattr(e,'title','')])
 
-          # HTML
+          # HTML (titles only, clickable)
           rows = []
           for score, t_, e in top5:
-              pub = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t_))
               title = html.escape(getattr(e,'title',''))
               link = html.escape(getattr(e,'link',''))
-              rows.append(f"<li><a href='{link}'>{title}</a> — <b>Score:</b> {score} — <i>{pub}</i></li>")
+              rows.append(f"<li><a href='{link}'>{title}</a></li>")
           html_doc = f"""<!doctype html><meta charset='utf-8'>
-          <title>London RSOC — Watchlist Top 5 (24h)</title>
+          <title>London RSOC — Watchlist Top 5</title>
           <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
-          <p>Updated: {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
           <ol>
           {''.join(rows) if rows else '<li>No items in last 24h.</li>'}
           </ol>
@@ -120,15 +114,15 @@ jobs:
           """
           open("public/watchlist_top5.html","w",encoding="utf-8").write(html_doc)
 
-          # Brief RSS (1 item pointing to HTML)
+          # Brief RSS (single item; titles list in description)
           rss = f"""<?xml version="1.0" encoding="UTF-8"?>
           <rss version="2.0"><channel>
-          <title>London RSOC — Watchlist Top 5 (24h)</title>
+          <title>London RSOC — Watchlist Top 5</title>
           <link>{BASE}watchlist_top5.html</link>
-          <description>Top 5 watchlist-relevant items in the last 24 hours</description>
+          <description>Top 5 watchlist-relevant items (titles only)</description>
           <language>en</language>
           <item>
-            <title>Top 5 (updated {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')})</title>
+            <title>Top 5 — titles</title>
             <link>{BASE}watchlist_top5.html</link>
             <description><![CDATA[
               <ol>
@@ -140,10 +134,10 @@ jobs:
           </channel></rss>"""
           open("public/brief.xml","w",encoding="utf-8").write(rss)
 
-          # Job summary
-          lines = ["## Watchlist Top 5 (last 24h)"]
+          # Job summary (titles only, clickable)
+          lines = ["## Watchlist Top 5 (titles only)"]
           for score, t_, e in top5:
-              lines.append(f"- [{getattr(e,'title','')}]({getattr(e,'link','')}) — Score {score}")
+              lines.append(f"- [{getattr(e,'title','')}]({getattr(e,'link','')})")
           open(os.environ.get("GITHUB_STEP_SUMMARY","summary.md"),"w").write("\n".join(lines))
           PY
 

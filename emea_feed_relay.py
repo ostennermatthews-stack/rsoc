@@ -179,6 +179,16 @@ def now_ts() -> float:
     return time.time()
 
 
+def recency_bonus(published_ts: float) -> int:
+    """Small freshness lift for recent items."""
+    hours = (now_ts() - published_ts) / 3600.0
+    if hours <= 6:
+        return 10
+    if hours <= 24:
+        return 5
+    return 0
+
+
 def pub_ts(entry) -> float:
     for key in ("published_parsed", "updated_parsed"):
         v = entry.get(key)

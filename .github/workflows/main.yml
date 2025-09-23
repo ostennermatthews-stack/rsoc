@@ -19,13 +19,135 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - run: pip install feedparser feedgen
+
       # Ensure the folder exists and is never empty (prevents artifact errors)
       - run: mkdir -p public && echo "ok" > public/index.html
+
+      # Build your main RSS
+      # (If your file is emea_feed_relay_v2.py, change the filename here.)
       - run: python emea_feed_relay.py --output public/emea-filtered.xml --tiers tier1,tier2 --max-items 200
+
+      # ⬇️ Build 24h Watchlist Top 5 (CSV, HTML, RSS, Job Summary)
+      - name: Build 24h Watchlist Top 5 (CSV, HTML, RSS, Job Summary)
+        run: |
+          python - << 'PY'
+          import re, csv, html, time, datetime as dt, feedparser, os
+
+          FEED_PATH = "public/emea-filtered.xml"
+          owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
+          BASE = f"https://{owner}.github.io/{repo}/"
+
+          WATCHLIST_RE = re.compile(
+              r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|"
+              r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\\s*-?\\s*aviv|hamburg|berlin|paris|"
+              r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|paddington|king'?s cross|st\\s*pancras|"
+              r"waterloo|victoria|liverpool street|london bridge|euston|charles de gaulle|cdg|orly|ory|gare du nord|"
+              r"gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz|schiphol|ams|amsterdam centraal|"
+              r"eindhoven centraal|eindhoven airport|ein|zrh|zurich hb|z[üu]rich hb|wien hbf|vienna hbf|vie|cph|"
+              r"k[øo]benhavns? hovedbaneg[aå]rd|kobenhavn h|stockholm central|arlanda|arn|oslo s|gardermoen|osl|"
+              r"berlin hbf|ber airport|ber|hamburg hbf|ham|ben gurion|tlv|tel[- ]aviv (ha)?hagana|hashalom|savidor|"
+              r"boryspil|kbp|zhuliany|iev|kyiv[- ]pasazhyrskyi|hamad international|doh|msheireb|king khalid international|"
+              r"ruh|riyadh metro|dubai international|dxb|al maktoum|dwc|union station|burjuman)",
+              re.I,
+          )
+
+          def ts(entry):
+              for k in ("published_parsed","updated_parsed"):
+                  v = getattr(entry, k, None)
+                  if v: return time.mktime(v)
+              return time.time()
+
+          def parse_score(desc):
+              m = re.search(r"Score:\\s*(\\d+)", desc or "", re.I)
+              return int(m.group(1)) if m else None
+
+          def priority_guess(title):
+              if "Priority 1 - Investigate" in (title or ""): return 100
+              if "Priority 2 - FYSA" in (title or ""): return 60
+              if "Priority 3 - FYSA" in (title or ""): return 35
+              return 0
+
+          d = feedparser.parse(FEED_PATH)
+          now = time.time()
+          cutoff = now - 24*3600
+          cands = []
+          for e in d.entries:
+              t_ = ts(e)
+              if t_ < cutoff:
+                  continue
+              text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              if not WATCHLIST_RE.search(text):
+                  continue
+              score = parse_score(getattr(e,"summary","")) or priority_guess(getattr(e,"title",""))
+              cands.append((score, t_, e))
+
+          cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
+          top5 = cands[:5]
+
+          os.makedirs("public", exist_ok=True)
+
+          # CSV
+          csv_path = "public/watchlist_top5.csv"
+          with open(csv_path, "w", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              w.writerow(["Title","Link","Published","Score","Source"])
+              for score, t_, e in top5:
+                  pub = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t_))
+                  src = getattr(getattr(e,'source',''), 'title', None) or getattr(e,'source','') or ""
+                  w.writerow([getattr(e,'title',''), getattr(e,'link',''), pub, score, src])
+
+          # HTML
+          rows = []
+          for score, t_, e in top5:
+              pub = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t_))
+              title = html.escape(getattr(e,'title',''))
+              link = html.escape(getattr(e,'link',''))
+              rows.append(f"<li><a href='{link}'>{title}</a> — <b>Score:</b> {score} — <i>{pub}</i></li>")
+          html_doc = f"""<!doctype html><meta charset='utf-8'>
+          <title>London RSOC — Watchlist Top 5 (24h)</title>
+          <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
+          <p>Updated: {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
+          <ol>
+          {''.join(rows) if rows else '<li>No items in last 24h.</li>'}
+          </ol>
+          <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
+          """
+          open("public/watchlist_top5.html","w",encoding="utf-8").write(html_doc)
+
+          # Brief RSS (1 item pointing to HTML)
+          rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0"><channel>
+          <title>London RSOC — Watchlist Top 5 (24h)</title>
+          <link>{BASE}watchlist_top5.html</link>
+          <description>Top 5 watchlist-relevant items in the last 24 hours</description>
+          <language>en</language>
+          <item>
+            <title>Top 5 (updated {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')})</title>
+            <link>{BASE}watchlist_top5.html</link>
+            <description><![CDATA[
+              <ol>
+              {''.join(rows) if rows else '<li>No items in last 24h.</li>'}
+              </ol>
+            ]]></description>
+            <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
+          </item>
+          </channel></rss>"""
+          open("public/brief.xml","w",encoding="utf-8").write(rss)
+
+          # Job summary
+          lines = ["## Watchlist Top 5 (last 24h)"]
+          for score, t_, e in top5:
+              lines.append(f"- [{getattr(e,'title','')}]({getattr(e,'link','')}) — Score {score}")
+          open(os.environ.get("GITHUB_STEP_SUMMARY","summary.md"),"w").write("\n".join(lines))
+          PY
+
+      # Upload all files in /public (includes XML, CSV, HTML, brief)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public

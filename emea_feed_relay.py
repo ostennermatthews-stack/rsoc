@@ -63,7 +63,7 @@ ALERT_FEEDS = [
     "https://www.osac.gov/RSS",                                      # Security alerts by country
     "https://www.europol.europa.eu/rss/news",                        # Law-enforcement ops
     "https://www.gdacs.org/XML/RSS.xml",                             # Global disaster alerts
-    "https://m.highwaysengland.co.uk/feeds/rss/UnplannedEvents.xml", # UK motorways
+    "https://erccportal.jrc.ec.europa.eu/API/ERCC/EchoFlash/GetEchoFlashItemsRss", # Global disaster alerts
 ]
 
 ALL_FEEDS: List[Tuple[str, str]] = []

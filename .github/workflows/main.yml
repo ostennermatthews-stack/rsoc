@@ -24,97 +24,108 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install feedparser feedgen
+      - name: Debug env
+        run: |
+          python -V
+          pip --version
+          ls -la
+          echo "Repo: $GITHUB_REPOSITORY"
 
-      # Ensure the folder exists and is never empty (prevents artifact errors)
-      - run: mkdir -p public && echo "ok" > public/index.html
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install feedparser feedgen
 
-      # Build your main RSS
-      # (If your file is emea_feed_relay_v2.py, change the filename here.)
-      - run: python emea_feed_relay.py --output public/emea-filtered.xml --tiers tier1,tier2 --max-items 200
+      - name: Build main feed
+        run: |
+          mkdir -p public
+          echo "ok" > public/index.html
+          python emea_feed_relay.py --output public/emea-filtered.xml --max-items 200
 
-      # Build 24h Watchlist Top 5 (TITLES ONLY) + HTML + brief RSS + job summary
-      - name: Build 24h Watchlist Top 5 (titles only)
+      - name: Build 24h Watchlist Top 5 (titles only; high-signal OR watchlist)
         run: |
           python - << 'PY'
-          import re, csv, html, time, datetime as dt, feedparser, os
+          import re, html, time, feedparser, os
 
           FEED_PATH = "public/emea-filtered.xml"
           owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
           BASE = f"https://{owner}.github.io/{repo}/"
 
-          WATCHLIST_RE = re.compile(
-              r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|"
-              r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\\s*-?\\s*aviv|hamburg|berlin|paris|"
-              r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|paddington|king'?s cross|st\\s*pancras|"
-              r"waterloo|victoria|liverpool street|london bridge|euston|charles de gaulle|cdg|orly|ory|gare du nord|"
-              r"gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz|schiphol|ams|amsterdam centraal|"
-              r"eindhoven centraal|eindhoven airport|ein|zrh|zurich hb|z[üu]rich hb|wien hbf|vienna hbf|vie|cph|"
-              r"k[øo]benhavns? hovedbaneg[aå]rd|kobenhavn h|stockholm central|arlanda|arn|oslo s|gardermoen|osl|"
-              r"berlin hbf|ber airport|ber|hamburg hbf|ham|ben gurion|tlv|tel[- ]aviv (ha)?hagana|hashalom|savidor|"
-              r"boryspil|kbp|zhuliany|iev|kyiv[- ]pasazhyrskyi|hamad international|doh|msheireb|king khalid international|"
-              r"ruh|riyadh metro|dubai international|dxb|al maktoum|dwc|union station|burjuman)",
-              re.I,
+          d = feedparser.parse(FEED_PATH)
+          cutoff = time.time() - 24*3600
+
+          VIOLENCE = re.compile(r"\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\b", re.I)
+          CASUALTY = re.compile(r"\b(killed|dead|deaths|fatal|injured|wounded|casualties)\b", re.I)
+          TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\s+lanes\s+closed|carriageway\s+closed|road\s+closed|blocked|drone.*(airport|airspace)", re.I)
+          PROTEST   = re.compile(r"\b(protest|demonstration|march|strike|walkout|blockade)\b", re.I)
+          SCALE     = re.compile(r"mass (?:protest|demonstration)s?|nationwide|countrywide|tens? of thousands|hundreds? of (?:people|protesters)|general|national strike|roadblocks?|highways? blocked|airport (?:blocked|closed)", re.I)
+          ENFORCE   = re.compile(r"riot police|tear gas|water cannon|clashes with police|arrests?|detained", re.I)
+          GOV       = re.compile(r"curfew|state of emergency|martial law|emergency decree", re.I)
+          EVAC      = re.compile(r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated", re.I)
+
+          WATCHLIST = re.compile(
+            r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|"
+            r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|"
+            r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|"
+            r"gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)",
+            re.I,
           )
 
-          def ts(entry):
-              for k in ("published_parsed","updated_parsed"):
-                  v = getattr(entry, k, None)
-                  if v: return time.mktime(v)
-              return time.time()
+          NON_EMEA = re.compile(
+            r"(American|United States|USA|Canadian|Mexican|Brazilian|Argentinian|Chilean|Peruvian|"
+            r"Chinese|Indian|Pakistani|Bangladeshi|Japanese|Korean|South Korean|Indonesian|Philippine|Malaysian|Thai|Vietnamese|Singaporean|"
+            r"Australian|New Zealander|Kiwi|South African|Nigerian|Kenyan|Ethiopian|Ghanaian|Ugandan|Tanzanian|Somali|Congolese|Angolan|Mozambican|Zambian|Zimbabwean|Botswanan|Namibian|Senegalese|Cameroonian)",
+            re.I
+          )
 
-          def parse_score(desc):
-              m = re.search(r"Score:\\s*(\\d+)", desc or "", re.I)
-              return int(m.group(1)) if m else None
+          def ts(e):
+            for k in ("published_parsed","updated_parsed"):
+              v = getattr(e, k, None)
+              if v: return time.mktime(v)
+            return time.time()
 
-          def priority_guess(title):
-              if "Priority 1 - Investigate" in (title or ""): return 100
-              if "Priority 2 - FYSA" in (title or ""): return 60
-              if "Priority 3 - FYSA" in (title or ""): return 35
-              return 0
+          def qualifies(e):
+            t_ = ts(e)
+            if t_ < cutoff: return False
+            text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+            if NON_EMEA.search(text): return False
+            high_signal = bool(
+              VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or
+              (PROTEST.search(text) and (SCALE.search(text) or ENFORCE.search(text) or GOV.search(text) or EVAC.search(text)))
+            )
+            watch_hit = bool(WATCHLIST.search(text))
+            return high_signal or watch_hit
 
-          d = feedparser.parse(FEED_PATH)
-          now = time.time()
-          cutoff = now - 24*3600
-          cands = []
-          for e in d.entries:
-              t_ = ts(e)
-              if t_ < cutoff:
-                  continue
-              text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
-              if not WATCHLIST_RE.search(text):
-                  continue
-              score = parse_score(getattr(e,"summary","")) or priority_guess(getattr(e,"title",""))
-              cands.append((score, t_, e))
+          def score(e):
+            text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+            s = 0
+            if VIOLENCE.search(text): s += 90
+            if CASUALTY.search(text): s += 30
+            if TRANS_HARD.search(text): s += 75
+            if PROTEST.search(text): s += 30
+            if SCALE.search(text): s += 20
+            if ENFORCE.search(text): s += 15
+            if GOV.search(text): s += 25
+            if EVAC.search(text): s += 25
+            if WATCHLIST.search(text): s += 30
+            age_h = (time.time() - ts(e))/3600
+            s += 10 if age_h <= 6 else (5 if age_h <= 24 else 0)
+            return s
 
-          cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
+          cands = [e for e in d.entries if qualifies(e)]
+          cands.sort(key=lambda e: (score(e), ts(e)), reverse=True)
           top5 = cands[:5]
+
+          rows = [f"<li><a href='{html.escape(getattr(e,'link',''))}'>{html.escape(getattr(e,'title',''))}</a></li>" for e in top5]
           os.makedirs("public", exist_ok=True)
+          open("public/watchlist_top5.html","w",encoding="utf-8").write(
+            "<!doctype html><meta charset='utf-8'><title>London RSOC — Watchlist Top 5</title>"
+            "<h1>London RSOC — Watchlist Top 5 (last 24h)</h1>"
+            "<ol>" + (''.join(rows) if rows else '<li>No items in last 24h.</li>') + "</ol>"
+            "<p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>"
+          )
 
-          # CSV (titles only)
-          with open("public/watchlist_top5.csv","w",newline="",encoding="utf-8") as f:
-              w = csv.writer(f)
-              w.writerow(["Title"])
-              for score, t_, e in top5:
-                  w.writerow([getattr(e,'title','')])
-
-          # HTML (titles only, clickable)
-          rows = []
-          for score, t_, e in top5:
-              title = html.escape(getattr(e,'title',''))
-              link = html.escape(getattr(e,'link',''))
-              rows.append(f"<li><a href='{link}'>{title}</a></li>")
-          html_doc = f"""<!doctype html><meta charset='utf-8'>
-          <title>London RSOC — Watchlist Top 5</title>
-          <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
-          <ol>
-          {''.join(rows) if rows else '<li>No items in last 24h.</li>'}
-          </ol>
-          <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
-          """
-          open("public/watchlist_top5.html","w",encoding="utf-8").write(html_doc)
-
-          # Brief RSS (single item; titles list in description)
+          now = time.time()
           rss = f"""<?xml version="1.0" encoding="UTF-8"?>
           <rss version="2.0"><channel>
           <title>London RSOC — Watchlist Top 5</title>
@@ -125,23 +136,14 @@ jobs:
             <title>Top 5 — titles</title>
             <link>{BASE}watchlist_top5.html</link>
             <description><![CDATA[
-              <ol>
-              {''.join(rows) if rows else '<li>No items in last 24h.</li>'}
-              </ol>
+              <ol>{''.join(rows) if rows else '<li>No items in last 24h.</li>'}</ol>
             ]]></description>
             <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
           </item>
           </channel></rss>"""
           open("public/brief.xml","w",encoding="utf-8").write(rss)
-
-          # Job summary (titles only, clickable)
-          lines = ["## Watchlist Top 5 (titles only)"]
-          for score, t_, e in top5:
-              lines.append(f"- [{getattr(e,'title','')}]({getattr(e,'link','')})")
-          open(os.environ.get("GITHUB_STEP_SUMMARY","summary.md"),"w").write("\n".join(lines))
           PY
 
-      # Upload all files in /public (includes XML, CSV, HTML, brief)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public
@@ -154,7 +156,6 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4

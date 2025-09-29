@@ -24,13 +24,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Debug env
-        run: |
-          python -V
-          pip --version
-          ls -la
-          echo "Repo: $GITHUB_REPOSITORY"
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -42,10 +35,11 @@ jobs:
           echo "ok" > public/index.html
           python emea_feed_relay.py --output public/emea-filtered.xml --max-items 200
 
-      - name: Build 24h Watchlist Top 5 (titles only; high-signal OR watchlist)
+      - name: Build 24h Watchlist Top 5 (table: Country · Headline · Source)
         run: |
           python - << 'PY'
           import re, html, time, feedparser, os
+          from urllib.parse import urlparse
 
           FEED_PATH = "public/emea-filtered.xml"
           owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
@@ -54,94 +48,194 @@ jobs:
           d = feedparser.parse(FEED_PATH)
           cutoff = time.time() - 24*3600
 
-          VIOLENCE = re.compile(r"\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\b", re.I)
-          CASUALTY = re.compile(r"\b(killed|dead|deaths|fatal|injured|wounded|casualties)\b", re.I)
-          TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\s+lanes\s+closed|carriageway\s+closed|road\s+closed|blocked|drone.*(airport|airspace)", re.I)
-          PROTEST   = re.compile(r"\b(protest|demonstration|march|strike|walkout|blockade)\b", re.I)
-          SCALE     = re.compile(r"mass (?:protest|demonstration)s?|nationwide|countrywide|tens? of thousands|hundreds? of (?:people|protesters)|general|national strike|roadblocks?|highways? blocked|airport (?:blocked|closed)", re.I)
-          ENFORCE   = re.compile(r"riot police|tear gas|water cannon|clashes with police|arrests?|detained", re.I)
-          GOV       = re.compile(r"curfew|state of emergency|martial law|emergency decree", re.I)
-          EVAC      = re.compile(r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated", re.I)
-
+          # --- GEO GUARD (strict) ---
+          EMEA_TERMS = re.compile(
+            r"(Europe|EU|European Union|Schengen|Eurozone|Middle East|Gulf|Levant|Maghreb|North Africa|"
+            r"UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Austria|Switzerland|Netherlands|Belgium|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova|"
+            r"Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)",
+            re.I
+          )
           WATCHLIST = re.compile(
             r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|"
-            r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|"
+            r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\\s*-?\\s*aviv|jerusalem|hamburg|berlin|paris|"
             r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|"
             r"gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)",
             re.I,
           )
-
-          NON_EMEA = re.compile(
-            r"(American|United States|USA|Canadian|Mexican|Brazilian|Argentinian|Chilean|Peruvian|"
-            r"Chinese|Indian|Pakistani|Bangladeshi|Japanese|Korean|South Korean|Indonesian|Philippine|Malaysian|Thai|Vietnamese|Singaporean|"
-            r"Australian|New Zealander|Kiwi|South African|Nigerian|Kenyan|Ethiopian|Ghanaian|Ugandan|Tanzanian|Somali|Congolese|Angolan|Mozambican|Zambian|Zimbabwean|Botswanan|Namibian|Senegalese|Cameroonian)",
+          NON_EMEA_STRONG = re.compile(
+            r"(American|United States|U\\.?S\\.?A\\.?|U\\.?S\\.?|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru|"
+            r"Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|District Attorney|county sheriff|"
+            r"Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|"
+            r"New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington\\,? D\\.?C\\.?)",
             re.I
           )
+          EMEA_TLDS = (".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye")
+          EMEA_DOMAINS = ("bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com","timesofisrael.com","jpost.com","middleeastmonitor.com","aa.com.tr","aljazeera.com","sky.com","skynews.com","reuters.com","afp.com","apnews.com","cnn.com","trtworld.com")
+
+          # --- SIGNAL PATTERNS (boost protests/demos/strikes/security incidents) ---
+          VIOLENCE = re.compile(r"\\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\\b", re.I)
+          CASUALTY = re.compile(r"\\b(killed|dead|deaths|fatal|injured|wounded|casualties)\\b", re.I)
+          TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\\s+lanes\\s+closed|carriageway\\s+closed|road\\s+closed|blocked|drone.*(airport|airspace)", re.I)
+          PROTEST   = re.compile(r"\\b(protest|demonstration|march|strike|walkout|blockade)\\b", re.I)
+          SCALE     = re.compile(r"mass (?:protest|demonstration)s?|nationwide|countrywide|tens? of thousands|hundreds? of (?:people|protesters)|general|national strike|roadblocks?|highways? blocked|airport (?:blocked|closed)", re.I)
+          ENFORCE   = re.compile(r"riot police|tear gas|water cannon|clashes with police|arrests?|detained", re.I)
+          GOV       = re.compile(r"curfew|state of emergency|martial law|emergency decree|security alert raised", re.I)
+          EVAC      = re.compile(r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated", re.I)
 
           def ts(e):
-            for k in ("published_parsed","updated_parsed"):
-              v = getattr(e, k, None)
-              if v: return time.mktime(v)
-            return time.time()
+              for k in ("published_parsed","updated_parsed"):
+                  v = getattr(e, k, None)
+                  if v: return time.mktime(v)
+              return time.time()
+
+          def is_emea(text, link):
+              t = text or ""
+              # Hard block strong non-EMEA tokens unless explicit EMEA or watchlist hit
+              if NON_EMEA_STRONG.search(t) and not (EMEA_TERMS.search(t) or WATCHLIST.search(t)):
+                  return False
+              # Require clear EMEA evidence
+              if WATCHLIST.search(t): return True
+              if EMEA_TERMS.search(t): return True
+              try:
+                  host = urlparse(link).netloc.lower()
+                  if any(host.endswith(tld) for tld in EMEA_TLDS): return True
+                  if any(dom in host for dom in EMEA_DOMAINS): return True
+              except Exception:
+                  pass
+              return False
 
           def qualifies(e):
-            t_ = ts(e)
-            if t_ < cutoff: return False
-            text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
-            if NON_EMEA.search(text): return False
-            high_signal = bool(
-              VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or
-              (PROTEST.search(text) and (SCALE.search(text) or ENFORCE.search(text) or GOV.search(text) or EVAC.search(text)))
-            )
-            watch_hit = bool(WATCHLIST.search(text))
-            return high_signal or watch_hit
+              t_ = ts(e)
+              if t_ < cutoff: return False
+              title = getattr(e,'title','')
+              summary = getattr(e,'summary','')
+              link = getattr(e,'link','')
+              text = f"{title} {summary}"
+              if not is_emea(text, link): return False
+              # High-signal incidents OR any protest/demonstration/strike
+              high_signal = bool(
+                VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or
+                PROTEST.search(text)
+              )
+              return high_signal
 
+          # Weighting (protests, enforcement, govt measures pushed higher)
           def score(e):
-            text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
-            s = 0
-            if VIOLENCE.search(text): s += 90
-            if CASUALTY.search(text): s += 30
-            if TRANS_HARD.search(text): s += 75
-            if PROTEST.search(text): s += 30
-            if SCALE.search(text): s += 20
-            if ENFORCE.search(text): s += 15
-            if GOV.search(text): s += 25
-            if EVAC.search(text): s += 25
-            if WATCHLIST.search(text): s += 30
-            age_h = (time.time() - ts(e))/3600
-            s += 10 if age_h <= 6 else (5 if age_h <= 24 else 0)
-            return s
+              text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              s = 0
+              if VIOLENCE.search(text): s += 90
+              if CASUALTY.search(text): s += 35
+              if TRANS_HARD.search(text): s += 70
+              if PROTEST.search(text): s += 55       # ↑ protests priority
+              if SCALE.search(text): s += 35         # ↑ mass/scale
+              if ENFORCE.search(text): s += 30       # ↑ police/enforcement
+              if GOV.search(text): s += 40           # ↑ curfew/emergency
+              if EVAC.search(text): s += 50          # ↑ evacuations
+              age_h = (time.time() - ts(e))/3600
+              s += 10 if age_h <= 6 else (5 if age_h <= 24 else 0)
+              return s
+
+          # Country resolver
+          COUNTRY_PATTERNS = [
+            ("United Kingdom", re.compile(r"\\b(uk|united kingdom|britain|english|scottish|welsh|london|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|paddington|king'?s cross|st\\s*pancras|waterloo|victoria|liverpool street|london bridge|euston)\\b", re.I)),
+            ("France",         re.compile(r"\\b(france|paris|cdg|charles de gaulle|orly|ory|gare du nord|gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz)\\b", re.I)),
+            ("Germany",        re.compile(r"\\b(germany|berlin|hamburg|ber airport|berlin hbf|hamburg hbf)\\b", re.I)),
+            ("Netherlands",    re.compile(r"\\b(netherlands|amsterdam|eindhoven|schiphol|ams|amsterdam centraal|eindhoven centraal|ein)\\b", re.I)),
+            ("Switzerland",    re.compile(r"\\b(switzerland|zurich|zürich|zrh|zurich hb|zürich hb|yverdon-les-bains)\\b", re.I)),
+            ("Austria",        re.compile(r"\\b(austria|vienna|wien hbf|vienna hbf|vie)\\b", re.I)),
+            ("Denmark",        re.compile(r"\\b(denmark|copenhagen|københavn|kobenhavn|cph|kobenhavn h|københavn h)\\b", re.I)),
+            ("Norway",         re.compile(r"\\b(norway|oslo|oslo s|gardermoen|osl)\\b", re.I)),
+            ("Sweden",         re.compile(r"\\b(sweden|stockholm|arlanda|arn|stockholm central)\\b", re.I)),
+            ("Ukraine",        re.compile(r"\\b(ukraine|kyiv|kiev|boryspil|kbp|zhuliany|iev|kyiv[- ]pasazhyrskyi)\\b", re.I)),
+            ("Qatar",          re.compile(r"\\b(qatar|doha|hamad international|doh|msheireb)\\b", re.I)),
+            ("Saudi Arabia",   re.compile(r"\\b(saudi arabia|riyadh|king khalid international|ruh|riyadh metro)\\b", re.I)),
+            ("United Arab Emirates", re.compile(r"\\b(united arab emirates|uae|dubai|dxb|al maktoum|dwc|burjuman)\\b", re.I)),
+            ("Israel/Palestinian Territories", re.compile(r"\\b(israel|palestine|gaza|west bank|tel[- ]?aviv|jerusalem|ben gurion|tlv)\\b", re.I)),
+            ("Morocco",        re.compile(r"\\b(morocco|rabat|casablanca|marrakech|tangier|fes|agadir)\\b", re.I)),
+          ]
+
+          def infer_country(text, link):
+              t = text or ""
+              for name, rx in COUNTRY_PATTERNS:
+                  if rx.search(t):
+                      return name
+              try:
+                  host = urlparse(link).netloc.lower()
+                  if host.endswith(".il"): return "Israel/Palestinian Territories"
+                  if host.endswith(".uk"): return "United Kingdom"
+                  if host.endswith(".fr"): return "France"
+                  if host.endswith(".de"): return "Germany"
+                  if host.endswith(".nl"): return "Netherlands"
+                  if host.endswith(".ch"): return "Switzerland"
+                  if host.endswith(".at"): return "Austria"
+                  if host.endswith(".dk"): return "Denmark"
+                  if host.endswith(".no"): return "Norway"
+                  if host.endswith(".se"): return "Sweden"
+                  if host.endswith(".ua"): return "Ukraine"
+                  if host.endswith(".qa"): return "Qatar"
+                  if host.endswith(".sa"): return "Saudi Arabia"
+                  if host.endswith(".ae"): return "United Arab Emirates"
+                  if host.endswith(".ma"): return "Morocco"
+              except Exception:
+                  pass
+              return "—"
 
           cands = [e for e in d.entries if qualifies(e)]
           cands.sort(key=lambda e: (score(e), ts(e)), reverse=True)
           top5 = cands[:5]
 
-          rows = [f"<li><a href='{html.escape(getattr(e,'link',''))}'>{html.escape(getattr(e,'title',''))}</a></li>" for e in top5]
+          def domain(u):
+              try:
+                  return urlparse(u).netloc.replace("www.","")
+              except Exception:
+                  return "source"
+
+          rows = []
+          for e in top5:
+              title = html.escape(getattr(e,'title',''))
+              link  = getattr(e,'link','')
+              text  = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              country = html.escape(infer_country(text, link))
+              src = html.escape(domain(link))
+              rows.append(f"<tr><td>{country}</td><td>{title}</td><td><a href='{html.escape(link)}'>{src}</a></td></tr>")
+
+          table_html = f"""
+          <!doctype html><meta charset='utf-8'>
+          <title>London RSOC — Watchlist Top 5 (table)</title>
+          <style>
+            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px}}
+            table{{border-collapse:collapse;width:100%}}
+            th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}
+            th{{background:#f5f5f5;text-align:left}}
+            tr:nth-child(even){{background:#fafafa}}
+          </style>
+          <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
+          <table>
+            <thead><tr><th>Country</th><th>Headline</th><th>Source</th></tr></thead>
+            <tbody>
+              {''.join(rows) if rows else "<tr><td colspan='3'>No items in last 24h.</td></tr>"}
+            </tbody>
+          </table>
+          <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
+          """
           os.makedirs("public", exist_ok=True)
-          open("public/watchlist_top5.html","w",encoding="utf-8").write(
-            "<!doctype html><meta charset='utf-8'><title>London RSOC — Watchlist Top 5</title>"
-            "<h1>London RSOC — Watchlist Top 5 (last 24h)</h1>"
-            "<ol>" + (''.join(rows) if rows else '<li>No items in last 24h.</li>') + "</ol>"
-            "<p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>"
-          )
+          open("public/watchlist_top5.html","w",encoding="utf-8").write(table_html)
 
           now = time.time()
-          rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+          brief = f"""<?xml version="1.0" encoding="UTF-8"?>
           <rss version="2.0"><channel>
           <title>London RSOC — Watchlist Top 5</title>
           <link>{BASE}watchlist_top5.html</link>
-          <description>Top 5 watchlist-relevant items (titles only)</description>
+          <description>Top 5 watchlist-relevant items (see table)</description>
           <language>en</language>
           <item>
-            <title>Top 5 — titles</title>
+            <title>Top 5 — open table</title>
             <link>{BASE}watchlist_top5.html</link>
-            <description><![CDATA[
-              <ol>{''.join(rows) if rows else '<li>No items in last 24h.</li>'}</ol>
-            ]]></description>
+            <description>Open the table view for Country · Headline · Source.</description>
             <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
           </item>
           </channel></rss>"""
-          open("public/brief.xml","w",encoding="utf-8").write(rss)
+          open("public/brief.xml","w",encoding="utf-8").write(brief)
           PY
 
       - uses: actions/upload-pages-artifact@v3

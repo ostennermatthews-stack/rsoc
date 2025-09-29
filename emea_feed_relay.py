@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-London RSOC News Monitor — EMEA-focused RSS relay (v2.2)
+London RSOC News Monitor — EMEA-focused RSS relay (v2.1)
 
 What this does
 - Aggregates curated RSS sources; emphasises EMEA (Europe, Middle East, North Africa)
@@ -35,6 +35,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Tuple
+from difflib import SequenceMatcher
 
 import feedparser
 from feedgen.feed import FeedGenerator
@@ -76,11 +77,9 @@ NEWS_FEEDS = [
 # Alerts/incident feeds
 ALERT_FEEDS = [
     # Law enforcement / alerts / disasters
-    "https://www.europol.europa.eu/rss/news",
-    "https://www.gdacs.org/XML/RSS.xml",
-    # National Highways (UK) — filtered by nh_is_high_signal()
-    "https://m.highwaysengland.co.uk/feeds/rss/UnplannedEvents.xml",
-    # (Deliberately NOT including ERCC Daily Flash)
+    \"https://www.europol.europa.eu/rss/news\",
+    \"https://www.gdacs.org/XML/RSS.xml\",
+    # (Deliberately NOT including ERCC Daily Flash or National Highways)
 ]
 
 # Aggregate into [(kind, url)] for harvesting
@@ -105,9 +104,7 @@ TERROR_ATTACK = [r"terror(?!ism\s*threat)|car bomb|suicide bomb|ied|explosion|bl
 CASUALTIES = [r"\b(dead|deaths|fatalit|injured|wounded|casualt)\b"]
 PROTEST_STRIKE = [r"protest|demonstration|march|blockade|strike|walkout|picket"]
 CYBER = [r"ransomware|data breach|ddos|phishing|malware|cyber attack|hack(?!ney)"]
-TRANSPORT_HARD = [
-    r"airport closed|airspace closed|runway closed|rail suspended|service suspended|motorway closed|port closed|all lanes closed|carriageway closed|road closed|blocked|drone.*(airport|airspace)"
-]
+TRANSPORT_HARD = [r"airport closed|airspace closed|runway closed|rail suspended|service suspended|motorway closed|port closed|all lanes closed|carriageway closed|road closed|blocked"]
 TRANSPORT_SOFT = [r"closure|cancel(l|)ed|cancellation|diverted|delay|disruption|grounded|air traffic control"]
 
 # Weather/Meteoalarm — severity mapping via simple heuristics
@@ -115,18 +112,6 @@ METEO_RED = [r"\bred\b", r"\bsevere\b", r"\bextreme\b"]
 METEO_ORANGE = [r"\borange\b", r"amber"]
 METEO_YELLOW = [r"\byellow\b"]
 HAZARDS = [r"flood|flash flood|earthquake|aftershock|landslide|wildfire|bushfire|storm|hurricane|typhoon|tornado|heatwave|snow|ice|avalanche|wind|gale"]
-
-# Protest scale / enforcement / government measures / evacuation
-PROTEST_SCALE = [
-    r"mass (?:protest|demonstration)s?",
-    r"nationwide|countrywide",
-    r"tens? of thousands|hundreds? of (?:people|protesters)",
-    r"general strike|national strike",
-    r"roadblocks?|highways? blocked|ports? blocked|airport (?:blocked|closed)"
-]
-ENFORCEMENT = [r"riot police|tear gas|water cannon|baton|clashes with police|arrests?|detained|detentions?"]
-GOV_MEASURES = [r"curfew|state of emergency|martial law|emergency decree|security alert raised"]
-EVACUATION = [r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated"]
 
 # Watchlist — main cities & major hubs
 WATCHLIST = [
@@ -162,13 +147,10 @@ EMEA_ALLOW = [
     r"\b(Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)\b",
 ]
 NON_EMEA_BLOCK = [
-    # Americas
-    r"\b(United States|USA|US|American|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru)\b",
-    # Asia-Pacific
-    r"\b(China|Chinese|India|Indian|Pakistan|Pakistani|Bangladesh|Bangladeshi|Japan|Japanese|South Korea|South Korean|Korea|Korean|Indonesia|Indonesian|Philippines|Philippine|Malaysia|Malaysian|Thailand|Thai|Vietnam|Vietnamese|Singapore|Singaporean)\b",
-    r"\b(Australia|Australian|New Zealand|New Zealander|Kiwi)\b",
-    # Sub-Saharan Africa (not in North Africa list)
-    r"\b(South Africa|South African|Nigeria|Nigerian|Kenya|Kenyan|Ethiopia|Ethiopian|Ghana|Ghanaian|Uganda|Ugandan|Tanzania|Tanzanian|Somalia|Somali|Congo|Congolese|Angola|Mozambique|Zambia|Zimbabwe|Botswana|Namibia|Senegal|Cameroon|Cameroonian)\b",
+    r"\b(United States|USA|US|Canada|Mexico|Brazil|Argentina|Chile|Peru)\b",
+    r"\b(China|India|Pakistan|Bangladesh|Japan|South Korea|Indonesia|Philippines|Malaysia|Thailand|Vietnam|Singapore)\b",
+    r"\b(Australia|New Zealand)\b",
+    r"\b(South Africa|Nigeria|Kenya|Ethiopia|Ghana|Uganda|Tanzania|Somalia|DRC|Congo|Angola|Mozambique|Zambia|Zimbabwe|Botswana|Namibia|Senegal|Cameroon)\b",
 ]
 
 # Priority thresholds (internal)
@@ -203,10 +185,6 @@ METEO_RED_RE = _compile(METEO_RED)
 METEO_ORANGE_RE = _compile(METEO_ORANGE)
 METEO_YELLOW_RE = _compile(METEO_YELLOW)
 HAZARDS_RE = _compile(HAZARDS)
-PROTEST_SCALE_RE = _compile(PROTEST_SCALE)
-ENFORCEMENT_RE   = _compile(ENFORCEMENT)
-GOV_MEASURES_RE  = _compile(GOV_MEASURES)
-EVACUATION_RE    = _compile(EVACUATION)
 WATCHLIST_RE = _compile(WATCHLIST)
 WATCHLIST_HUBS_RE = _compile(WATCHLIST_HUBS)
 EMEA_ALLOW_RE = _compile(EMEA_ALLOW)
@@ -239,46 +217,6 @@ def recency_bonus(published_ts: float) -> int:
         return 5
     return 0
 
-
-# National Highways filters (stricter)
-NH_KEEP_HARD = [
-    r"\b(all lanes|both directions|carriageway|road)\s+(closed|blocked)\b",
-    r"\b(police incident|serious collision|major collision|investigation work)\b",
-    r"\b(overturned|jackknifed|multiple vehicles|multi[- ]vehicle)\b",
-    r"\b(vehicle fire|lorry fire|HGV fire|car fire)\b",
-    r"\b(spillage|diesel spill|chemical|hazmat|hazardous load)\b",
-    r"\b(trapped traffic|traffic stopped)\b",
-    r"\b(diversion in operation|diversion route)\b",
-]
-NH_KEEP_SOFT = [r"\b(major|severe|long)\s+delays\b"]
-NH_DROP = [
-    r"\b(cleared|has cleared|all lanes (?:have )?reopened|reopened)\b",
-    r"\b(earlier|previous|update)\b",
-    r"\b(broken[- ]down vehicle|overheight vehicle|debris removed)\b",
-    r"\b(congestion|queueing traffic|slow traffic)\b",
-]
-NH_KEEP_HARD_RE = _compile(NH_KEEP_HARD)
-NH_KEEP_SOFT_RE = _compile(NH_KEEP_SOFT)
-NH_DROP_RE = _compile(NH_DROP)
-NH_MIN_DELAY_MIN = 45
-
-
-def nh_is_high_signal(text: str) -> bool:
-    t = text.lower()
-    if any(rx.search(t) for rx in NH_DROP_RE):
-        return False
-    # Hard keep: closures / police incidents / overturned / hazmat / trapped / diversion
-    if any(rx.search(t) for rx in NH_KEEP_HARD_RE):
-        # If it's just a vehicle fire, require closure/blocked/stop/diversion too
-        if re.search(r"\b(vehicle|lorry|hgv|car)\s+fire\b", t, re.I):
-            if not re.search(r"\b(closed|blocked|trapped traffic|traffic stopped|diversion)\b", t, re.I):
-                return False
-        return True
-    # Soft keep: major/severe/long delays with explicit minutes >= threshold
-    if any(rx.search(t) for rx in NH_KEEP_SOFT_RE):
-        m = re.search(r"delays?\s*of\s*(?:over|around|approximately|about)?\s*(\d+)\s*minutes", t, re.I)
-        return int(m.group(1)) >= NH_MIN_DELAY_MIN if m else True
-    return False
 
 
 @dataclass
@@ -316,41 +254,31 @@ def watchlist_bonus(text: str) -> int:
     return 0
 
 
-def incident_score(text: str, feed_kind: str, published_ts: float, source: str = "") -> Tuple[int, bool]:
+def incident_score(text: str, feed_kind: str, published_ts: float) -> Tuple[int, bool]:
     t = text.lower()
     score = 0
 
-    # Violence / terror
+    # Violence / terror first
     if any(rx.search(t) for rx in TERROR_RE):
         score += 90
     if any(rx.search(t) for rx in VIOLENCE_RE):
-        score += 85
+        score += 80  # a bit stronger than before
     if any(rx.search(t) for rx in CASUALTIES_RE):
         score += 30
-
-    # Protests & policing / government measures / evacuations
     if any(rx.search(t) for rx in PROTEST_RE):
-        score += 40
-    if any(rx.search(t) for rx in PROTEST_SCALE_RE):
-        score += 25
-    if any(rx.search(t) for rx in ENFORCEMENT_RE):
-        score += 20
-    if any(rx.search(t) for rx in GOV_MEASURES_RE):
-        score += 35
-    if any(rx.search(t) for rx in EVACUATION_RE):
         score += 40
 
     # Transport
     if any(rx.search(t) for rx in TRANS_HARD_RE):
-        score += 65
+        score += 60
     if any(rx.search(t) for rx in TRANS_SOFT_RE):
-        score += 25
+        score += 30
 
     # Cyber
     if any(rx.search(t) for rx in CYBER_RE):
         score += 50
 
-    # Weather / hazards
+    # Weather
     met_sev = meteo_severity(t)
     if feed_kind == "meteoalarm" and met_sev < 40 and REQUIRE_METEO_ORANGE:
         return 0, False  # drop yellow-only meteoalarm
@@ -359,27 +287,9 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
         if re.search(r"flood|earthquake|aftershock", t):
             score += 20
 
-    # Quantity-based boosts (arrests/injured/killed)
-    qty_patterns = [
-        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:killed|dead|deaths|fatalities)", re.I), 4, 80),
-        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:injured|wounded|casualties)", re.I), 2, 50),
-        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:arrests?|detained|detentions?)", re.I), 1, 40),
-    ]
-    for rx, mult, cap in qty_patterns:
-        for m in rx.finditer(t):
-            try:
-                n = int(m.group(1).replace(',', ''))
-                score += min(cap, max(5, n * mult))
-            except Exception:
-                pass
-
     # Watchlist & recency
     score += watchlist_bonus(t)
     score += recency_bonus(published_ts)
-
-    # Trusted publishers small boost (break ties)
-    if source and re.search(r"BBC|Sky News|FRANCE 24|France 24|DW|Deutsche Welle|Euronews|TRT|Times of Israel|Jerusalem Post|Al Jazeera|CNN|Reuters|AFP", source, re.I):
-        score += 8
 
     # Urgent override
     urgent = any(rx.search(t) for rx in URGENT_RE) or score >= (P1_THRESHOLD + 10)
@@ -433,12 +343,8 @@ def harvest() -> List[Item]:
                 continue
             if not is_emea_relevant(joined):
                 continue
-            if "highwaysengland.co.uk" in netloc or "nationalhighways.co.uk" in netloc:
-                if not nh_is_high_signal(joined):
-                    continue
-
-            ts = pub_ts(e)
-            score, urgent = incident_score(joined, feed_kind, ts, source_name)
+                        ts = pub_ts(e)
+            score, urgent = incident_score(joined, feed_kind, ts)
             prio = to_priority(score)
             if prio == 0 or score < MIN_SCORE_TO_INCLUDE:
                 continue
@@ -457,14 +363,29 @@ def harvest() -> List[Item]:
     # Israel HFC (rocket sirens)
     items.extend(harvest_oref())
 
-    # Dedup by title+link and sort by (priority, score, time)
-    seen = set()
+    # Deduplicate and sort by (priority, score, time)
+    seen_hashes = set()
+    seen_norm_titles: List[str] = []
     out: List[Item] = []
     for it in sorted(items, key=lambda x: (x.priority, x.score, x.published_ts), reverse=True):
+        # First, basic hash (title|link)
         h = hashlib.sha256((it.title + '|' + it.link).encode('utf-8')).hexdigest()
-        if h in seen:
+        if h in seen_hashes:
             continue
-        seen.add(h)
+        # Then, title-normalised near-dup check
+        norm = normalize_title(it.title)
+        is_dup = False
+        if norm in seen_norm_titles:
+            is_dup = True
+        else:
+            for prev in seen_norm_titles:
+                if SequenceMatcher(None, norm, prev).ratio() >= 0.96:
+                    is_dup = True
+                    break
+        if is_dup:
+            continue
+        seen_hashes.add(h)
+        seen_norm_titles.append(norm)
         out.append(it)
     return out
 
@@ -531,7 +452,7 @@ def harvest_oref() -> List[Item]:
             now = datetime.now(timezone.utc)
             def _mk_item(title: str, link_text: str, when: float, details: str) -> Item:
                 text = f"{title} {details}"
-                score, urgent = incident_score(text, "alerts", when, "Israel HFC")
+                score, urgent = incident_score(text, "alerts", when)
                 score = max(score, P1_THRESHOLD + 5)  # force P1
                 return Item(
                     title=title,

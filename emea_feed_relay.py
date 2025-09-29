@@ -1,27 +1,17 @@
 #!/usr/bin/env python3
 """
-London RSOC News Monitor — EMEA-focused RSS relay (v2.1)
+London RSOC News Monitor — EMEA-focused RSS relay (v2.3, clean)
 
-What this does
 - Aggregates curated RSS sources; emphasises EMEA (Europe, Middle East, North Africa)
-- Scored, signal-based ranking (violence/unrest, hard transport, cyber, hazards)
+- Signal-based scoring for violence/unrest, hard transport, cyber, hazards
 - Meteoalarm per-country allow-list with Orange/Red-only policy
 - Optional Israel HFC (Oref) rocket siren fetcher
-- National Highways (UK) filtering to reduce noise
-- **Hidden weighting**: scores/tiers are NOT published in the feed (clean titles); scoring is used internally
-  and by your separate workflow step that builds the Top-5 watchlist page/brief.
+- National Highways REMOVED entirely
+- Hidden weighting: public RSS shows clean titles (no tiers/scores)
 
 Usage
   pip install feedparser feedgen
   python emea_feed_relay.py --output public/emea-filtered.xml --max-items 200 [--replay N --reseed TOKEN]
-
-Outputs
-  - RSS 2.0 feed at --output (default public/emea-filtered.xml)
-
-Notes
-  - Keep NEWS_FEEDS as plain URL strings. The script tags them as "news" internally.
-  - Update METEOALARM_COUNTRIES to control which countries you pull from Meteoalarm.
-  - To completely drop a noisy source, remove it from NEWS_FEEDS/ALERT_FEEDS.
 """
 from __future__ import annotations
 import argparse
@@ -74,12 +64,10 @@ NEWS_FEEDS = [
     "https://www.aa.com.tr/en/rss/default?cat=live",
 ]
 
-# Alerts/incident feeds
+# Alerts/incident feeds (no National Highways, no ERCC)
 ALERT_FEEDS = [
-    # Law enforcement / alerts / disasters
-    \"https://www.europol.europa.eu/rss/news\",
-    \"https://www.gdacs.org/XML/RSS.xml\",
-    # (Deliberately NOT including ERCC Daily Flash or National Highways)
+    "https://www.europol.europa.eu/rss/news",
+    "https://www.gdacs.org/XML/RSS.xml",
 ]
 
 # Aggregate into [(kind, url)] for harvesting
@@ -92,7 +80,7 @@ for url in NEWS_FEEDS:
     ALL_FEEDS.append(("news", url))
 
 # ------------------------------
-# Config: Scoring (kept internal/hidden)
+# Config: Scoring (internal/hidden)
 # ------------------------------
 EXCLUDE_PATTERNS = [
     r"\b(sport|football|soccer|rugby|tennis|golf|cricket|olympic|f1|motorsport)\b",
@@ -104,7 +92,9 @@ TERROR_ATTACK = [r"terror(?!ism\s*threat)|car bomb|suicide bomb|ied|explosion|bl
 CASUALTIES = [r"\b(dead|deaths|fatalit|injured|wounded|casualt)\b"]
 PROTEST_STRIKE = [r"protest|demonstration|march|blockade|strike|walkout|picket"]
 CYBER = [r"ransomware|data breach|ddos|phishing|malware|cyber attack|hack(?!ney)"]
-TRANSPORT_HARD = [r"airport closed|airspace closed|runway closed|rail suspended|service suspended|motorway closed|port closed|all lanes closed|carriageway closed|road closed|blocked"]
+TRANSPORT_HARD = [
+    r"airport closed|airspace closed|runway closed|rail suspended|service suspended|motorway closed|port closed|all lanes closed|carriageway closed|road closed|blocked|drone.*(airport|airspace)"
+]
 TRANSPORT_SOFT = [r"closure|cancel(l|)ed|cancellation|diverted|delay|disruption|grounded|air traffic control"]
 
 # Weather/Meteoalarm — severity mapping via simple heuristics
@@ -112,6 +102,18 @@ METEO_RED = [r"\bred\b", r"\bsevere\b", r"\bextreme\b"]
 METEO_ORANGE = [r"\borange\b", r"amber"]
 METEO_YELLOW = [r"\byellow\b"]
 HAZARDS = [r"flood|flash flood|earthquake|aftershock|landslide|wildfire|bushfire|storm|hurricane|typhoon|tornado|heatwave|snow|ice|avalanche|wind|gale"]
+
+# Protest scale / enforcement / government measures / evacuation
+PROTEST_SCALE = [
+    r"mass (?:protest|demonstration)s?",
+    r"nationwide|countrywide",
+    r"tens? of thousands|hundreds? of (?:people|protesters)",
+    r"general strike|national strike",
+    r"roadblocks?|highways? blocked|ports? blocked|airport (?:blocked|closed)"
+]
+ENFORCEMENT = [r"riot police|tear gas|water cannon|baton|clashes with police|arrests?|detained|detentions?"]
+GOV_MEASURES = [r"curfew|state of emergency|martial law|emergency decree|security alert raised"]
+EVACUATION = [r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated"]
 
 # Watchlist — main cities & major hubs
 WATCHLIST = [
@@ -121,11 +123,10 @@ WATCHLIST = [
     r"zurich|yverdon-les-bains",
     r"stockholm|oslo|copenhagen|vienna",
     r"eindhoven|amsterdam",
-    r"tel[\s-]*aviv|jerusalem",
+    r"tel\s*-?\s*aviv|jerusalem",
     r"hamburg|berlin|paris",
 ]
 WATCHLIST_HUBS = [
-    # Airports + rail hubs for those cities
     r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy",
     r"paddington|king'?s cross|st\s*pancras|waterloo|victoria|liverpool street|london bridge|euston",
     r"charles de gaulle|cdg|orly|ory|gare du nord|gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz",
@@ -147,10 +148,13 @@ EMEA_ALLOW = [
     r"\b(Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)\b",
 ]
 NON_EMEA_BLOCK = [
-    r"\b(United States|USA|US|Canada|Mexico|Brazil|Argentina|Chile|Peru)\b",
-    r"\b(China|India|Pakistan|Bangladesh|Japan|South Korea|Indonesia|Philippines|Malaysia|Thailand|Vietnam|Singapore)\b",
-    r"\b(Australia|New Zealand)\b",
-    r"\b(South Africa|Nigeria|Kenya|Ethiopia|Ghana|Uganda|Tanzania|Somalia|DRC|Congo|Angola|Mozambique|Zambia|Zimbabwe|Botswana|Namibia|Senegal|Cameroon)\b",
+    # Americas
+    r"\b(United States|USA|US|American|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru)\b",
+    # Asia-Pacific
+    r"\b(China|Chinese|India|Indian|Pakistan|Pakistani|Bangladesh|Bangladeshi|Japan|Japanese|South Korea|South Korean|Korea|Korean|Indonesia|Indonesian|Philippines|Philippine|Malaysia|Malaysian|Thailand|Thai|Vietnam|Vietnamese|Singapore|Singaporean)\b",
+    r"\b(Australia|Australian|New Zealand|New Zealander|Kiwi)\b",
+    # Sub-Saharan Africa (not in North Africa list)
+    r"\b(South Africa|South African|Nigeria|Nigerian|Kenya|Kenyan|Ethiopia|Ethiopian|Ghana|Ghanaian|Uganda|Ugandan|Tanzania|Tanzanian|Somalia|Somali|Congo|Congolese|Angola|Mozambique|Zambia|Zimbabwe|Botswana|Namibia|Senegal|Cameroon|Cameroonian)\b",
 ]
 
 # Priority thresholds (internal)
@@ -185,6 +189,10 @@ METEO_RED_RE = _compile(METEO_RED)
 METEO_ORANGE_RE = _compile(METEO_ORANGE)
 METEO_YELLOW_RE = _compile(METEO_YELLOW)
 HAZARDS_RE = _compile(HAZARDS)
+PROTEST_SCALE_RE = _compile(PROTEST_SCALE)
+ENFORCEMENT_RE   = _compile(ENFORCEMENT)
+GOV_MEASURES_RE  = _compile(GOV_MEASURES)
+EVACUATION_RE    = _compile(EVACUATION)
 WATCHLIST_RE = _compile(WATCHLIST)
 WATCHLIST_HUBS_RE = _compile(WATCHLIST_HUBS)
 EMEA_ALLOW_RE = _compile(EMEA_ALLOW)
@@ -217,7 +225,17 @@ def recency_bonus(published_ts: float) -> int:
         return 5
     return 0
 
-
+# Title normalisation for de-duplication (ignore case/punct/common prefixes)
+def normalize_title(s: str) -> str:
+    s = s or ""
+    s = s.lower()
+    s = re.sub(r"^(breaking|live|update|updated|just in|watch|video):\s+", "", s)
+    s = re.sub(r"\s*\([^)]+\)$", "", s)  # drop trailing brackets
+    s = re.sub(r"[-–—]+", "-", s)  # normalise dashes
+    s = re.sub(r"[^a-z0-9]+", " ", s)  # keep alnum
+    s = re.sub(r"\b(report|video|live|analysis|opinion)\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 @dataclass
 class Item:
@@ -230,7 +248,6 @@ class Item:
     score: int
     priority: int  # 1, 2, 3
     urgent: bool
-
 
 # ------------------------------
 # Scoring model (internal-only)
@@ -254,31 +271,41 @@ def watchlist_bonus(text: str) -> int:
     return 0
 
 
-def incident_score(text: str, feed_kind: str, published_ts: float) -> Tuple[int, bool]:
+def incident_score(text: str, feed_kind: str, published_ts: float, source: str = "") -> Tuple[int, bool]:
     t = text.lower()
     score = 0
 
-    # Violence / terror first
+    # Violence / terror
     if any(rx.search(t) for rx in TERROR_RE):
         score += 90
     if any(rx.search(t) for rx in VIOLENCE_RE):
-        score += 80  # a bit stronger than before
+        score += 85
     if any(rx.search(t) for rx in CASUALTIES_RE):
         score += 30
+
+    # Protests & policing / government measures / evacuations
     if any(rx.search(t) for rx in PROTEST_RE):
+        score += 40
+    if any(rx.search(t) for rx in PROTEST_SCALE_RE):
+        score += 25
+    if any(rx.search(t) for rx in ENFORCEMENT_RE):
+        score += 20
+    if any(rx.search(t) for rx in GOV_MEASURES_RE):
+        score += 35
+    if any(rx.search(t) for rx in EVACUATION_RE):
         score += 40
 
     # Transport
     if any(rx.search(t) for rx in TRANS_HARD_RE):
-        score += 60
+        score += 65
     if any(rx.search(t) for rx in TRANS_SOFT_RE):
-        score += 30
+        score += 25
 
     # Cyber
     if any(rx.search(t) for rx in CYBER_RE):
         score += 50
 
-    # Weather
+    # Weather / hazards
     met_sev = meteo_severity(t)
     if feed_kind == "meteoalarm" and met_sev < 40 and REQUIRE_METEO_ORANGE:
         return 0, False  # drop yellow-only meteoalarm
@@ -287,9 +314,27 @@ def incident_score(text: str, feed_kind: str, published_ts: float) -> Tuple[int,
         if re.search(r"flood|earthquake|aftershock", t):
             score += 20
 
+    # Quantity-based boosts (arrests/injured/killed)
+    qty_patterns = [
+        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:killed|dead|deaths|fatalities)", re.I), 4, 80),
+        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:injured|wounded|casualties)", re.I), 2, 50),
+        (re.compile(r"(\d{1,3}(?:,\d{3})*)\s+(?:arrests?|detained|detentions?)", re.I), 1, 40),
+    ]
+    for rx, mult, cap in qty_patterns:
+        for m in rx.finditer(t):
+            try:
+                n = int(m.group(1).replace(',', ''))
+                score += min(cap, max(5, n * mult))
+            except Exception:
+                pass
+
     # Watchlist & recency
     score += watchlist_bonus(t)
     score += recency_bonus(published_ts)
+
+    # Trusted publishers small boost (break ties)
+    if source and re.search(r"BBC|Sky News|FRANCE 24|France 24|DW|Deutsche Welle|Euronews|TRT|Times of Israel|Jerusalem Post|Al Jazeera|CNN|Reuters|AFP", source, re.I):
+        score += 8
 
     # Urgent override
     urgent = any(rx.search(t) for rx in URGENT_RE) or score >= (P1_THRESHOLD + 10)
@@ -330,7 +375,6 @@ def harvest() -> List[Item]:
         except Exception:
             continue
         source_name = fp.feed.get("title") or url
-        netloc = urlparse(url).netloc.lower()
         for e in fp.entries:
             title = (e.get("title") or "").strip()
             link = (e.get("link") or "").strip()
@@ -343,8 +387,9 @@ def harvest() -> List[Item]:
                 continue
             if not is_emea_relevant(joined):
                 continue
-                        ts = pub_ts(e)
-            score, urgent = incident_score(joined, feed_kind, ts)
+
+            ts = pub_ts(e)
+            score, urgent = incident_score(joined, feed_kind, ts, source_name)
             prio = to_priority(score)
             if prio == 0 or score < MIN_SCORE_TO_INCLUDE:
                 continue
@@ -403,10 +448,8 @@ def build_feed(items: List[Item], title: str, homepage: str, replay: int = 0, re
         if it.priority not in (1, 2, 3):
             continue
         fe = fg.add_entry()
-        # Public label hidden: just the raw title
-        fe.title(it.title)
+        fe.title(it.title)  # public: clean title
         fe.link(href=it.link)
-        # Keep description minimal: include source if available, no scores/tiers
         desc = it.summary
         if it.source:
             desc = f"<b>Source:</b> {html.escape(it.source)}<br/>" + desc
@@ -452,7 +495,7 @@ def harvest_oref() -> List[Item]:
             now = datetime.now(timezone.utc)
             def _mk_item(title: str, link_text: str, when: float, details: str) -> Item:
                 text = f"{title} {details}"
-                score, urgent = incident_score(text, "alerts", when)
+                score, urgent = incident_score(text, "alerts", when, "Israel HFC")
                 score = max(score, P1_THRESHOLD + 5)  # force P1
                 return Item(
                     title=title,

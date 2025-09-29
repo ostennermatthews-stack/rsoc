@@ -151,4 +151,93 @@ jobs:
                   host = urlparse(link).netloc.lower()
                   if host.endswith(".il"): return "Israel/Palestinian Territories"
                   if host.endswith(".uk"): return "United Kingdom"
-                  if host.ends
+                  if host.endswith(".fr"): return "France"
+                  if host.endswith(".de"): return "Germany"
+                  if host.endswith(".nl"): return "Netherlands"
+                  if host.endswith(".ch"): return "Switzerland"
+                  if host.endswith(".at"): return "Austria"
+                  if host.endswith(".dk"): return "Denmark"
+                  if host.endswith(".no"): return "Norway"
+                  if host.endswith(".se"): return "Sweden"
+                  if host.endswith(".ua"): return "Ukraine"
+                  if host.endswith(".qa"): return "Qatar"
+                  if host.endswith(".sa"): return "Saudi Arabia"
+                  if host.endswith(".ae"): return "United Arab Emirates"
+                  if host.endswith(".ma"): return "Morocco"
+              except Exception:
+                  pass
+              return "—"
+
+          cands = [e for e in d.entries if qualifies(e)]
+          cands.sort(key=lambda e: (score(e), ts(e)), reverse=True)
+          top5 = cands[:5]
+
+          def domain(u):
+              try:
+                  return urlparse(u).netloc.replace("www.","")
+              except Exception:
+                  return "source"
+
+          rows = []
+          for e in top5:
+              title = html.escape(getattr(e,'title',''))
+              link  = getattr(e,'link','')
+              text  = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              country = html.escape(infer_country(text, link))
+              src = html.escape(domain(link))
+              rows.append(f"<tr><td>{country}</td><td>{title}</td><td><a href='{html.escape(link)}'>{src}</a></td></tr>")
+
+          table_html = f"""
+          <!doctype html><meta charset='utf-8'>
+          <title>London RSOC — Watchlist Top 5 (table)</title>
+          <style>
+            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px}}
+            table{{border-collapse:collapse;width:100%}}
+            th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}
+            th{{background:#f5f5f5;text-align:left}}
+            tr:nth-child(even){{background:#fafafa}}
+          </style>
+          <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
+          <table>
+            <thead><tr><th>Country</th><th>Headline</th><th>Source</th></tr></thead>
+            <tbody>
+              {''.join(rows) if rows else "<tr><td colspan='3'>No items in last 24h.</td></tr>"}
+            </tbody>
+          </table>
+          <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
+          """
+          os.makedirs("public", exist_ok=True)
+          open("public/watchlist_top5.html","w",encoding="utf-8").write(table_html)
+
+          now = time.time()
+          brief = f"""<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0"><channel>
+          <title>London RSOC — Watchlist Top 5</title>
+          <link>{BASE}watchlist_top5.html</link>
+          <description>Top 5 watchlist-relevant items (see table)</description>
+          <language>en</language>
+          <item>
+            <title>Top 5 — open table</title>
+            <link>{BASE}watchlist_top5.html</link>
+            <description>Open the table view for Country · Headline · Source.</description>
+            <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
+          </item>
+          </channel></rss>"""
+          open("public/brief.xml","w",encoding="utf-8").write(brief)
+          PY
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

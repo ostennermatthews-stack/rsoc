@@ -55,6 +55,12 @@ NEWS_FEEDS = [
     "https://feeds.npr.org/1004/rss.xml",
     "https://www.aljazeera.com/xml/rss/all.xml",
 
+    # Global desks (EMEA-gated by your strict filters)
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",   # NYT World
+    "https://www.cnbc.com/id/100727362/device/rss/rss.html",    # CNBC World
+    "https://feeds.nbcnews.com/nbcnews/public/news",            # NBC News Top
+    "https://www.al-monitor.com/rss",                           # Al-Monitor (MENA)
+
     # Anadolu Agency (English)
     "https://www.aa.com.tr/en/rss/default?cat=guncel",
     "https://www.aa.com.tr/en/rss/default?cat=live",

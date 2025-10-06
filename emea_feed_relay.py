@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-London RSOC News Monitor — EMEA-focused RSS relay (v2.4, strict EMEA + protest boost)
+London RSOC News Monitor — EMEA-focused RSS relay (v2.5, EN-only, strict EMEA + protest boost)
 
 - Aggregates curated RSS sources; emphasises EMEA (Europe, Middle East, North Africa)
+- English-language sources only (or English editions)
 - Signal-based scoring for violence/unrest, HARD transport, cyber, hazards
 - Strong boost for protests/demonstrations/strikes, enforcement, curfews, evacuations
 - Strict geographic gating (blocks US/AMER/APAC unless explicit EMEA evidence)
 - Meteoalarm per-country allow-list with Orange/Red-only policy
-- Israel HFC (Oref) rocket siren fetcher
+- Israel HFC (Oref) rocket siren fetcher (JSON)
 - National Highways REMOVED entirely
 - Hidden weighting: public RSS shows clean titles (no tiers/scores)
 """
@@ -30,7 +31,7 @@ import feedparser
 from feedgen.feed import FeedGenerator
 
 # ------------------------------
-# Config: Sources
+# Config: Sources (EN-only)
 # ------------------------------
 METEOALARM_COUNTRIES = [
     "united-kingdom", "austria", "denmark", "norway", "germany",
@@ -39,27 +40,27 @@ METEOALARM_COUNTRIES = [
 MA_FEEDS = [f"https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-rss-{slug}" for slug in METEOALARM_COUNTRIES]
 
 NEWS_FEEDS = [
-    # Pan-Europe
+    # Pan-Europe (English)
     "https://feeds.bbci.co.uk/news/world/europe/rss.xml?edition=int",
     "https://www.france24.com/en/tag/europe/rss",
     "https://www.euronews.com/rss?format=mrss&level=theme&name=news",
 
-    # Israel / region
-    "https://www.timesofisrael.com/feed/",
-    "https://www.jpost.com/rss",
-    "https://www.middleeastmonitor.com/feed/",
-
-    # International broadcasters (EMEA-heavy)
+    # International broadcasters (English editions)
     "https://rss.dw.com/rdf/rss-en-all",
     "https://news.sky.com/feeds/rss/world.xml",
-    "https://feeds.npr.org/1004/rss.xml",
     "https://www.aljazeera.com/xml/rss/all.xml",
+    "https://feeds.npr.org/1004/rss.xml",                     # NPR World (EN)
 
-    # Global desks (EMEA-gated by your strict filters)
-    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",   # NYT World
-    "https://www.cnbc.com/id/100727362/device/rss/rss.html",    # CNBC World
-    "https://feeds.nbcnews.com/nbcnews/public/news",            # NBC News Top
-    "https://www.al-monitor.com/rss",                           # Al-Monitor (MENA)
+    # Israel / Middle East (English)
+    "https://www.timesofisrael.com/feed/",
+    "https://www.jpost.com/rss",
+    "https://www.al-monitor.com/rss",                         # Al-Monitor (EN)
+    "https://www.middleeastmonitor.com/feed/",
+
+    # Global desks (allowed, but EMEA-gated by strict filters)
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", # NYT World (EN)
+    "https://feeds.nbcnews.com/nbcnews/public/news",          # NBC News Top (EN)
+    "https://www.cnbc.com/id/100727362/device/rss/rss.html",  # CNBC World (EN)
 
     # Anadolu Agency (English)
     "https://www.aa.com.tr/en/rss/default?cat=guncel",
@@ -68,10 +69,11 @@ NEWS_FEEDS = [
 
 ALERT_FEEDS = [
     "https://www.europol.europa.eu/rss/news",
-    "https://www.gdacs.org/XML/RSS.xml",
+    "https://www.gdacs.org/XML/RSS.xml",   # working GDACS feed
     # (No National Highways, no ERCC Flash)
 ]
 
+# Aggregate into [(kind, url)]
 ALL_FEEDS: List[Tuple[str, str]] = []
 for url in MA_FEEDS:
     ALL_FEEDS.append(("meteoalarm", url))
@@ -83,18 +85,45 @@ for url in NEWS_FEEDS:
 # ------------------------------
 # Config: Scoring & GEO (internal/hidden)
 # ------------------------------
+# Broad topical noise filters (generic; no single-event targeting)
 EXCLUDE_PATTERNS = [
-    r"\b(sport|football|soccer|rugby|tennis|golf|cricket|olympic|f1|motorsport)\b",
-    r"\b(entertainment|celebrity|fashion|lifestyle|culture|arts|music|movie|tv|theatre|theater)\b",
-    r"\b(award|festival|red carpet|premiere|concert|tour)\b",
+    # Sports (multi-language + match/fixture metadata)
+    r"\b(sport|sports|football|soccer|rugby|tennis|golf|cricket|formula\s?1|f1|motogp|basketball|nba|hockey|nhl|baseball|mlb|boxing|mma|ufc|athletics|marathon|cycling|handball|volleyball|badminton|snooker|darts)\b",
+    r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|manager|coach|striker|midfielder|defender|goalkeeper|goal|assist|offside|penalt(y|ies)|red card|yellow card|line[- ]?up|result|scoreline|standings|table)\b",
+    r"\b(fútbol|futbol|calcio|voetbal|fotball|fotboll|bundesliga|ligue\s?1|premier league|la liga|serie\s?a|eredivisie|champions league|europa league)\b",
+
+    # Entertainment / lifestyle / culture
+    r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|music|movie|film|tv|series|theatre|theater|gaming|streaming|review|trailer|box office)\b",
+    r"\b(award|awards|festival|fashion week|premiere|concert|tour)\b",
 ]
+
+# Financial market noise: generic price/earnings/indices chatter (allow exceptions below)
+FIN_MARKET_ONLY = [
+    r"\b(stocks?|shares?|equities?|indexes?|indices|index|bonds?|bond yields?|yields?)\b",
+    r"\b(currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|oil price|gold price)\b",
+    r"\b(markets?|bourses?|exchanges?)\b",
+    r"\b(rall(?:y|ies)|surge|plunge|slide|gain|rise|fall|advance|retreat|extend gains|close[sd]? higher|close[sd]? lower|open[sd]? (?:higher|lower))\b",
+    r"\b(earnings|results|quarterly|q[1-4]|full[- ]year|guidance|analyst rating|downgrade|upgrade|ipo|initial public offering|dividend)\b",
+    r"\b(dow jones|nasdaq|s&?p\s*500|ftse|dax|cac\s*40|nikkei|hang seng|sensex|kospi|topix)\b",
+]
+# If any of these appear, we still allow the item even if it mentions markets
+FIN_SECURITY_EXCEPTIONS = [
+    r"\b(sanction|export control|tariff|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
+    r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
+    r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
+    r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
+    r"\b(explosion|blast|attack|shooting|bomb|grenade|kidnap|hostage|terror|rocket|missile|drone)\b",
+    r"\b(cyber|ransomware|ddos|data breach|hacked)\b",
+]
+
+# Core incident lexicon
 VIOLENCE = [r"riot|violent|clashes|looting|molotov|stabbing|knife attack|stabbing attack|shooting|gunfire|shots fired|arson"]
 TERROR_ATTACK = [r"terror(?!ism\s*threat)|car bomb|suicide bomb|ied|explosion|blast"]
 CASUALTIES = [r"\b(dead|deaths|fatalit|injured|wounded|casualt)\b"]
 PROTEST_STRIKE = [r"protest|demonstration|march|blockade|strike|walkout|picket"]
 CYBER = [r"ransomware|data breach|ddos|phishing|malware|cyber attack|hack(?!ney)"]
 TRANSPORT_HARD = [
-    r"airport closed|airspace closed|runway closed|rail suspended|service suspended|motorway closed|port closed|all lanes closed|carriageway closed|road closed|blocked|drone.*(airport|airspace)"
+    r"airport closed|airspace closed|runway closed|rail suspended|service suspended|port closed|all lanes closed|carriageway closed|road closed|blocked|drone.*(airport|airspace)"
 ]
 TRANSPORT_SOFT = [r"closure|cancel(l|)ed|cancellation|diverted|delay|disruption|grounded|air traffic control"]
 
@@ -166,12 +195,17 @@ US_STATES = [
 US_BIG_CITIES = [
     r"\b(New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,? D\.?C\.?)\b"
 ]
+
+# EMEA domains for domain-based EMEA inference (keep to EMEA-centric English outlets)
 EMEA_OUTLET_DOMAINS = (
     "bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com",
+    "aljazeera.com","al-monitor.com",
     "timesofisrael.com","jpost.com","middleeastmonitor.com",
-    "aa.com.tr","aljazeera.com","sky.com","skynews.com","trtworld.com",
-    "reuters.com","afp.com","apnews.com","cnn.com"
+    "aa.com.tr","trtworld.com",
+    "sky.com","skynews.com",
 )
+# NOTE: Do NOT include nytimes.com/nbcnews.com/cnbc.com/etc. here so they must have explicit EMEA evidence.
+
 EMEA_TLDS = (
     ".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",
     ".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",
@@ -197,6 +231,9 @@ def _compile(patterns: Iterable[str]) -> List[re.Pattern]:
     return [re.compile(p, re.I) for p in patterns]
 
 EXCL_RE = _compile(EXCLUDE_PATTERNS)
+FIN_MARKET_ONLY_RE = _compile(FIN_MARKET_ONLY)
+FIN_SECURITY_EXC_RE = _compile(FIN_SECURITY_EXCEPTIONS)
+
 VIOLENCE_RE = _compile(VIOLENCE)
 TERROR_RE = _compile(TERROR_ATTACK)
 CASUALTIES_RE = _compile(CASUALTIES)
@@ -242,10 +279,20 @@ def normalize_title(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+def is_noise(text: str) -> bool:
+    t = (text or "").lower()
+    # 1) broad topical noise (sports/lifestyle/etc.)
+    if any(rx.search(t) for rx in EXCL_RE):
+        return True
+    # 2) market-movement chatter with no security relevance
+    if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE):
+        return True
+    return False
+
 # Strict EMEA relevance
 def is_emea_relevant(text: str, link: str = "") -> bool:
     t = text or ""
-    # Hard block if strong non-EMEA tokens appear and there is no explicit EMEA/watchlist signal
+    # Hard block if strong non-EMEA tokens appear and no explicit EMEA/watchlist signal
     if any(rx.search(t) for rx in (NON_EMEA_RE + US_POLITICS_RE + US_STATES_RE + US_BIG_CITIES_RE)):
         if not (any(rx.search(t) for rx in EMEA_ALLOW_RE) or any(rx.search(t) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE))):
             return False
@@ -305,9 +352,9 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     # Violence / terror
     if any(rx.search(t) for rx in TERROR_RE):   score += 90
     if any(rx.search(t) for rx in VIOLENCE_RE): score += 85
-    if any(rx.search(t) for rx in CASUALTIES_RE): score += 35  # ↑
+    if any(rx.search(t) for rx in CASUALTIES_RE): score += 35
 
-    # Protests & policing / govt measures / evacuations (↑ weights)
+    # Protests & policing / govt measures / evacuations (boosted)
     if any(rx.search(t) for rx in PROTEST_RE):        score += 55
     if any(rx.search(t) for rx in PROTEST_SCALE_RE):  score += 35
     if any(rx.search(t) for rx in ENFORCEMENT_RE):    score += 30
@@ -315,7 +362,7 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     if any(rx.search(t) for rx in EVACUATION_RE):     score += 50
 
     # Transport
-    if any(rx.search(t) for rx in TRANS_HARD_RE): score += 70  # slight ↓ from 75 used in Top-5 step for balance
+    if any(rx.search(t) for rx in TRANS_HARD_RE): score += 70
     if any(rx.search(t) for rx in TRANS_SOFT_RE): score += 25
 
     # Cyber
@@ -347,8 +394,8 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     score += watchlist_bonus(t)
     score += recency_bonus(published_ts)
 
-    # Trusted publisher nudge
-    if source and re.search(r"BBC|Sky News|FRANCE 24|France 24|DW|Deutsche Welle|Euronews|TRT|Times of Israel|Jerusalem Post|Al Jazeera|CNN|Reuters|AFP", source, re.I):
+    # Trusted publisher nudge (EMEA-centric)
+    if source and re.search(r"BBC|Sky News|FRANCE 24|France 24|DW|Deutsche Welle|Euronews|TRT|Times of Israel|Jerusalem Post|Al Jazeera|Anadolu|Middle East Monitor|Al-Monitor", source, re.I):
         score += 8
 
     # Urgent override
@@ -390,7 +437,7 @@ def harvest() -> List[Item]:
             summary = html.unescape((e.get("summary") or e.get("description") or "").strip())
             joined = f"{title} {summary}"
 
-            if any(rx.search(joined) for rx in EXCL_RE):
+            if is_noise(joined):
                 continue
             if not is_emea_relevant(joined, link):
                 continue

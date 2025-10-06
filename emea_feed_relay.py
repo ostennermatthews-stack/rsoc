@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-London RSOC News Monitor — EMEA-focused RSS relay (v2.5, EN-only, strict EMEA + protest boost)
+London RSOC News Monitor — EMEA-focused RSS relay (v2.6, EN-only, strict EMEA + protest boost)
 
 - Aggregates curated RSS sources; emphasises EMEA (Europe, Middle East, North Africa)
 - English-language sources only (or English editions)
@@ -9,7 +9,7 @@ London RSOC News Monitor — EMEA-focused RSS relay (v2.5, EN-only, strict EMEA 
 - Strict geographic gating (blocks US/AMER/APAC unless explicit EMEA evidence)
 - Meteoalarm per-country allow-list with Orange/Red-only policy
 - Israel HFC (Oref) rocket siren fetcher (JSON)
-- National Highways REMOVED entirely
+- National Highways REMOVED entirely; ERCC Flash excluded
 - Hidden weighting: public RSS shows clean titles (no tiers/scores)
 """
 from __future__ import annotations
@@ -92,9 +92,17 @@ EXCLUDE_PATTERNS = [
     r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|manager|coach|striker|midfielder|defender|goalkeeper|goal|assist|offside|penalt(y|ies)|red card|yellow card|line[- ]?up|result|scoreline|standings|table)\b",
     r"\b(fútbol|futbol|calcio|voetbal|fotball|fotboll|bundesliga|ligue\s?1|premier league|la liga|serie\s?a|eredivisie|champions league|europa league)\b",
 
-    # Entertainment / lifestyle / culture
+    # Entertainment / lifestyle / culture / religion (non-incident)
     r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|music|movie|film|tv|series|theatre|theater|gaming|streaming|review|trailer|box office)\b",
-    r"\b(award|awards|festival|fashion week|premiere|concert|tour)\b",
+    r"\b(award|awards|festival|fashion week|premiere|concert|tour|nobel prize)\b",
+    r"\b(archbishop|bishop|church of england|cathedral|sermon|shabbat)\b",
+
+    # General features / think pieces / profiles
+    r"^(who is|meet the|profile:|opinion:|op\-ed:|editorial:|analysis:|explainer:)\b",
+
+    # Health/science features without incident
+    r"\b(World Health Organization|WHO)\b.*\b(report|study|survey|global (?:decline|increase|trend))\b",
+    r"\bhair transplant|cosmetic surgery|wellness|diet|fitness|beekeeping\b",
 ]
 
 # Financial market noise: generic price/earnings/indices chatter (allow exceptions below)
@@ -108,7 +116,7 @@ FIN_MARKET_ONLY = [
 ]
 # If any of these appear, we still allow the item even if it mentions markets
 FIN_SECURITY_EXCEPTIONS = [
-    r"\b(sanction|export control|tariff|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
+    r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
     r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
     r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
     r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
@@ -186,14 +194,13 @@ NON_EMEA_BLOCK = [
     r"\b(South Africa|South African|Nigeria|Nigerian|Kenya|Kenyan|Ethiopia|Ethiopian|Ghana|Ghanaian|Uganda|Ugandan|Tanzania|Tanzanian|Somalia|Somali|Congo|Congolese|Angola|Mozambique|Zambia|Zimbabwe|Botswana|Namibia|Senegal|Cameroon|Cameroonian)\b",
 ]
 US_POLITICS = [
-    r"\b(Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS)\b",
-    r"\b(District Attorney|county sheriff)\b",
+    r"\b(Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|Trump|Biden)\b",
 ]
 US_STATES = [
     r"\b(Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming)\b"
 ]
 US_BIG_CITIES = [
-    r"\b(New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,? D\.?C\.?)\b"
+    r"\b(New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,? D\.?C\.?|Boston|Seattle|Portland|San Francisco|Detroit|Baltimore|Minneapolis|St\.? Louis|Cleveland|Pittsburgh|Denver)\b"
 ]
 
 # EMEA domains for domain-based EMEA inference (keep to EMEA-centric English outlets)
@@ -204,7 +211,7 @@ EMEA_OUTLET_DOMAINS = (
     "aa.com.tr","trtworld.com",
     "sky.com","skynews.com",
 )
-# NOTE: Do NOT include nytimes.com/nbcnews.com/cnbc.com/etc. here so they must have explicit EMEA evidence.
+# NOTE: Do NOT include nytimes.com/nbcnews.com/cnbc.com here so they must have explicit EMEA evidence.
 
 EMEA_TLDS = (
     ".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",
@@ -315,6 +322,29 @@ def is_emea_relevant(text: str, link: str = "") -> bool:
         if any((host.endswith(dom) or (dom in host)) for dom in EMEA_OUTLET_DOMAINS): return True
     return False
 
+def meteo_severity(text: str) -> int:
+    t = text.lower()
+    if any(rx.search(t) for rx in METEO_RED_RE): return 70
+    if any(rx.search(t) for rx in METEO_ORANGE_RE): return 40
+    if any(rx.search(t) for rx in METEO_YELLOW_RE): return 0 if REQUIRE_METEO_ORANGE else 15
+    return 0
+
+def watchlist_bonus(text: str) -> int:
+    if any(rx.search(text) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE)):
+        return 30
+    return 0
+
+def is_high_signal(text: str, feed_kind: str) -> bool:
+    t = (text or "").lower()
+    if any(rx.search(t) for rx in (VIOLENCE_RE + CASUALTIES_RE + PROTEST_RE + TRANS_HARD_RE + CYBER_RE)):
+        return True
+    # Hazards: include only if Meteoalarm orange/red or hazard terms
+    if feed_kind == "meteoalarm":
+        return meteo_severity(t) >= 40
+    if any(rx.search(t) for rx in HAZARDS_RE):
+        return True
+    return False
+
 # ------------------------------
 # Dataclass
 # ------------------------------
@@ -333,18 +363,6 @@ class Item:
 # ------------------------------
 # Scoring model (internal-only)
 # ------------------------------
-def meteo_severity(text: str) -> int:
-    t = text.lower()
-    if any(rx.search(t) for rx in METEO_RED_RE): return 70
-    if any(rx.search(t) for rx in METEO_ORANGE_RE): return 40
-    if any(rx.search(t) for rx in METEO_YELLOW_RE): return 0 if REQUIRE_METEO_ORANGE else 15
-    return 0
-
-def watchlist_bonus(text: str) -> int:
-    if any(rx.search(text) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE)):
-        return 30
-    return 0
-
 def incident_score(text: str, feed_kind: str, published_ts: float, source: str = "") -> Tuple[int, bool]:
     t = text.lower()
     score = 0
@@ -440,6 +458,8 @@ def harvest() -> List[Item]:
             if is_noise(joined):
                 continue
             if not is_emea_relevant(joined, link):
+                continue
+            if not is_high_signal(joined, feed_kind):
                 continue
 
             ts = pub_ts(e)

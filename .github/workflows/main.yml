@@ -1,216 +1,269 @@
-name: "Build 24h Watchlist Top 5 (table: Country · Headline · Source)"
-  run: |
-    python - << 'PY'
-    import re, html, time, feedparser, os
-    from urllib.parse import urlparse
+name: Build and Publish RSS
 
-    FEED_PATH = "public/emea-filtered.xml"
-    owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
-    BASE = f"https://{owner}.github.io/{repo}/"
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 * * * *"   # hourly
 
-    d = feedparser.parse(FEED_PATH)
-    cutoff = time.time() - 24*3600
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
-    # --- Noise filters (generic) ---
-    EXCLUDE_PATTERNS = [
-      r"\b(sport|sports|football|soccer|rugby|tennis|golf|cricket|formula\s?1|f1|motogp|basketball|nba|hockey|nhl|baseball|mlb|boxing|mma|ufc|athletics|marathon|cycling|handball|volleyball|badminton|snooker|darts)\b",
-      r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|manager|coach|striker|midfielder|defender|goalkeeper|goal|assist|offside|penalt(y|ies)|red card|yellow card|line[- ]?up|result|scoreline|standings|table)\b",
-      r"\b(fútbol|futbol|calcio|voetbal|fotball|fotboll|bundesliga|ligue\s?1|premier league|la liga|serie\s?a|eredivisie|champions league|europa league)\b",
-      r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|music|movie|film|tv|series|theatre|theater|gaming|streaming|review|trailer|box office)\b",
-      r"\b(award|awards|festival|fashion week|premiere|concert|tour|nobel prize)\b",
-      r"\b(archbishop|bishop|church of england|cathedral|sermon|shabbat)\b",
-      r"^(who is|meet the|profile:|opinion:|op\-ed:|editorial:|analysis:|explainer:)\b",
-      r"\bhair transplant|cosmetic surgery|wellness|diet|fitness|beekeeping\b",
-    ]
-    FIN_MARKET_ONLY = [
-      r"\b(stocks?|shares?|equities?|indexes?|indices|index|bonds?|bond yields?|yields?)\b",
-      r"\b(currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|oil price|gold price)\b",
-      r"\b(markets?|bourses?|exchanges?)\b",
-      r"\b(rall(?:y|ies)|surge|plunge|slide|gain|rise|fall|advance|retreat|extend gains|close[sd]? higher|close[sd]? lower|open[sd]? (?:higher|lower))\b",
-      r"\b(earnings|results|quarterly|q[1-4]|full[- ]year|guidance|analyst rating|downgrade|upgrade|ipo|initial public offering|dividend)\b",
-      r"\b(dow jones|nasdaq|s&?p\s*500|ftse|dax|cac\s*40|nikkei|hang seng|sensex|kospi|topix)\b",
-    ]
-    FIN_SECURITY_EXCEPTIONS = [
-      r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
-      r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
-      r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
-      r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
-      r"\b(explosion|blast|attack|shooting|bomb|grenade|kidnap|hostage|terror|rocket|missile|drone)\b",
-      r"\b(cyber|ransomware|ddos|data breach|hacked)\b",
-    ]
-    EXCL_RE = [re.compile(p, re.I) for p in EXCLUDE_PATTERNS]
-    FIN_MARKET_ONLY_RE = [re.compile(p, re.I) for p in FIN_MARKET_ONLY]
-    FIN_SECURITY_EXC_RE = [re.compile(p, re.I) for p in FIN_SECURITY_EXCEPTIONS]
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
-    def is_noise(text: str) -> bool:
-        t = (text or "").lower()
-        if any(rx.search(t) for rx in EXCL_RE): return True
-        if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE): return True
-        return False
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    # --- GEO guard (strict) + signals ---
-    EMEA_TERMS = re.compile(r"(Europe|EU|European Union|Schengen|Eurozone|Middle East|Gulf|Levant|Maghreb|North Africa|UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Austria|Switzerland|Netherlands|Belgium|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova|Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)", re.I)
-    WATCHLIST = re.compile(r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)", re.I)
-    NON_EMEA_STRONG = re.compile(r"(American|United States|U\.?S\.?A\.?|U\.?S\.?|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru|Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|District Attorney|county sheriff|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,?\s*D\.?C\.?)", re.I)
-    EMEA_TLDS = (".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye")
-    EMEA_DOMAINS = ("bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com","aljazeera.com","al-monitor.com","timesofisrael.com","jpost.com","middleeastmonitor.com","aa.com.tr","trtworld.com","sky.com","skynews.com")
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    VIOLENCE = re.compile(r"\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\b", re.I)
-    CASUALTY = re.compile(r"\b(killed|dead|deaths|fatal|injured|wounded|casualties)\b", re.I)
-    TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\s+lanes\s+closed|carriageway\s+closed|road\s+closed|blocked|drone.*(airport|airspace)", re.I)
-    PROTEST   = re.compile(r"\b(protest|demonstration|march|strike|walkout|blockade)\b", re.I)
-    SCALE     = re.compile(r"mass (?:protest|demonstration)s?|nationwide|countrywide|tens? of thousands|hundreds? of (?:people|protesters)|general|national strike|roadblocks?|highways? blocked|airport (?:blocked|closed)", re.I)
-    ENFORCE   = re.compile(r"riot police|tear gas|water cannon|clashes with police|arrests?|detained", re.I)
-    GOV       = re.compile(r"curfew|state of emergency|martial law|emergency decree|security alert raised", re.I)
-    EVAC      = re.compile(r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated", re.I)
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install feedparser feedgen
 
-    def ts(e):
-        for k in ("published_parsed","updated_parsed"):
-            v = getattr(e, k, None)
-            if v: return time.mktime(v)
-        return time.time()
+      - name: Build main feed
+        run: |
+          mkdir -p public
+          echo "ok" > public/index.html
+          python emea_feed_relay.py --output public/emea-filtered.xml --max-items 200
 
-    def is_emea(text, link):
-        t = text or ""
-        if NON_EMEA_STRONG.search(t) and not (EMEA_TERMS.search(t) or WATCHLIST.search(t)):
-            return False
-        if WATCHLIST.search(t) or EMEA_TERMS.search(t):
-            return True
-        try:
-            host = urlparse(link).netloc.lower()
-            if any(host.endswith(tld) for tld in EMEA_TLDS): return True
-            if any(dom in host for dom in EMEA_DOMAINS): return True
-        except Exception:
-            pass
-        return False
+      - name: "Build 24h Watchlist Top 5 (table: Country · Headline · Source)"
+        run: |
+          python - << 'PY'
+          import re, html, time, feedparser, os
+          from urllib.parse import urlparse
 
-    def is_noise(text: str) -> bool:
-        t = (text or "").lower()
-        if any(rx.search(t) for rx in EXCL_RE): return True
-        if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE): return True
-        return False
+          FEED_PATH = "public/emea-filtered.xml"
+          owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
+          BASE = f"https://{owner}.github.io/{repo}/"
 
-    def qualifies(e):
-        t_ = ts(e)
-        if t_ < cutoff: return False
-        title = getattr(e,'title',''); summary = getattr(e,'summary',''); link = getattr(e,'link','')
-        text = f"{title} {summary}"
-        if is_noise(text): return False
-        if not is_emea(text, link): return False
-        return bool(VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or PROTEST.search(text))
+          d = feedparser.parse(FEED_PATH)
+          cutoff = time.time() - 24*3600
 
-    def score(e):
-        text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
-        s = 0
-        if VIOLENCE.search(text): s += 90
-        if CASUALTY.search(text): s += 35
-        if TRANS_HARD.search(text): s += 70
-        if PROTEST.search(text): s += 55
-        if SCALE.search(text): s += 35
-        if ENFORCE.search(text): s += 30
-        if GOV.search(text): s += 40
-        if EVAC.search(text): s += 50
-        age_h = (time.time() - ts(e))/3600
-        s += 10 if age_h <= 6 else (5 if age_h <= 24 else 0)
-        return s
+          # --- Noise filters (generic) ---
+          EXCLUDE_PATTERNS = [
+            r"\b(sport|sports|football|soccer|rugby|tennis|golf|cricket|formula\s?1|f1|motogp|basketball|nba|hockey|nhl|baseball|mlb|boxing|mma|ufc|athletics|marathon|cycling|handball|volleyball|badminton|snooker|darts)\b",
+            r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|manager|coach|striker|midfielder|defender|goalkeeper|goal|assist|offside|penalt(y|ies)|red card|yellow card|line[- ]?up|result|scoreline|standings|table)\b",
+            r"\b(fútbol|futbol|calcio|voetbal|fotball|fotboll|bundesliga|ligue\s?1|premier league|la liga|serie\s?a|eredivisie|champions league|europa league)\b",
+            r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|music|movie|film|tv|series|theatre|theater|gaming|streaming|review|trailer|box office)\b",
+            r"\b(award|awards|festival|fashion week|premiere|concert|tour|nobel prize)\b",
+            r"\b(archbishop|bishop|church of england|cathedral|sermon|shabbat)\b",
+            r"^(who is|meet the|profile:|opinion:|op\-ed:|editorial:|analysis:|explainer:)\b",
+            r"\bhair transplant|cosmetic surgery|wellness|diet|fitness|beekeeping\b",
+          ]
+          FIN_MARKET_ONLY = [
+            r"\b(stocks?|shares?|equities?|indexes?|indices|index|bonds?|bond yields?|yields?)\b",
+            r"\b(currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|oil price|gold price)\b",
+            r"\b(markets?|bourses?|exchanges?)\b",
+            r"\b(rall(?:y|ies)|surge|plunge|slide|gain|rise|fall|advance|retreat|extend gains|close[sd]? higher|close[sd]? lower|open[sd]? (?:higher|lower))\b",
+            r"\b(earnings|results|quarterly|q[1-4]|full[- ]year|guidance|analyst rating|downgrade|upgrade|ipo|initial public offering|dividend)\b",
+            r"\b(dow jones|nasdaq|s&?p\s*500|ftse|dax|cac\s*40|nikkei|hang seng|sensex|kospi|topix)\b",
+          ]
+          FIN_SECURITY_EXCEPTIONS = [
+            r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
+            r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
+            r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
+            r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
+            r"\b(explosion|blast|attack|shooting|bomb|grenade|kidnap|hostage|terror|rocket|missile|drone)\b",
+            r"\b(cyber|ransomware|ddos|data breach|hacked)\b",
+          ]
+          EXCL_RE = [re.compile(p, re.I) for p in EXCLUDE_PATTERNS]
+          FIN_MARKET_ONLY_RE = [re.compile(p, re.I) for p in FIN_MARKET_ONLY]
+          FIN_SECURITY_EXC_RE = [re.compile(p, re.I) for p in FIN_SECURITY_EXCEPTIONS]
 
-    COUNTRY_PATTERNS = [
-      ("United Kingdom", re.compile(r"\b(uk|united kingdom|britain|english|scottish|welsh|london|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|paddington|king'?s cross|st\s*pancras|waterloo|victoria|liverpool street|london bridge|euston)\b", re.I)),
-      ("France",         re.compile(r"\b(france|paris|cdg|charles de gaulle|orly|ory|gare du nord|gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz)\b", re.I)),
-      ("Germany",        re.compile(r"\b(germany|berlin|hamburg|ber airport|berlin hbf|hamburg hbf)\b", re.I)),
-      ("Netherlands",    re.compile(r"\b(netherlands|amsterdam|eindhoven|schiphol|ams|amsterdam centraal|eindhoven centraal|ein)\b", re.I)),
-      ("Switzerland",    re.compile(r"\b(switzerland|zurich|zürich|zrh|zurich hb|zürich hb|yverdon-les-bains)\b", re.I)),
-      ("Austria",        re.compile(r"\b(austria|vienna|wien hbf|vienna hbf|vie)\b", re.I)),
-      ("Denmark",        re.compile(r"\b(denmark|copenhagen|københavn|kobenhavn|cph|kobenhavn h|københavn h)\b", re.I)),
-      ("Norway",         re.compile(r"\b(norway|oslo|oslo s|gardermoen|osl)\b", re.I)),
-      ("Sweden",         re.compile(r"\b(sweden|stockholm|arlanda|arn|stockholm central)\b", re.I)),
-      ("Ukraine",        re.compile(r"\b(ukraine|kyiv|kiev|boryspil|kbp|zhuliany|iev|kyiv[- ]pasazhyrskyi)\b", re.I)),
-      ("Qatar",          re.compile(r"\b(qatar|doha|hamad international|doh|msheireb)\b", re.I)),
-      ("Saudi Arabia",   re.compile(r"\b(saudi arabia|riyadh|king khalid international|ruh|riyadh metro)\b", re.I)),
-      ("United Arab Emirates", re.compile(r"\b(united arab emirates|uae|dubai|dxb|al maktoum|dwc|burjuman)\b", re.I)),
-      ("Israel/Palestinian Territories", re.compile(r"\b(israel|palestine|gaza|west bank|tel[- ]?aviv|jerusalem|ben gurion|tlv)\b", re.I)),
-      ("Morocco",        re.compile(r"\b(morocco|rabat|casablanca|marrakech|tangier|fes|agadir)\b", re.I)),
-    ]
+          def is_noise(text: str) -> bool:
+              t = (text or "").lower()
+              if any(rx.search(t) for rx in EXCL_RE): return True
+              if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE): return True
+              return False
 
-    def infer_country(text, link):
-        t = text or ""
-        for name, rx in COUNTRY_PATTERNS:
-            if rx.search(t): return name
-        try:
-            host = urlparse(link).netloc.lower()
-            if host.endswith(".il"): return "Israel/Palestinian Territories"
-            if host.endswith(".uk"): return "United Kingdom"
-            if host.endswith(".fr"): return "France"
-            if host.endswith(".de"): return "Germany"
-            if host.endswith(".nl"): return "Netherlands"
-            if host.endswith(".ch"): return "Switzerland"
-            if host.endswith(".at"): return "Austria"
-            if host.endswith(".dk"): return "Denmark"
-            if host.endswith(".no"): return "Norway"
-            if host.endswith(".se"): return "Sweden"
-            if host.endswith(".ua"): return "Ukraine"
-            if host.endswith(".qa"): return "Qatar"
-            if host.endswith(".sa"): return "Saudi Arabia"
-            if host.endswith(".ae"): return "United Arab Emirates"
-            if host.endswith(".ma"): return "Morocco"
-        except Exception:
-            pass
-        return "—"
+          # --- GEO guard (strict) + signals ---
+          EMEA_TERMS = re.compile(r"(Europe|EU|European Union|Schengen|Eurozone|Middle East|Gulf|Levant|Maghreb|North Africa|UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Austria|Switzerland|Netherlands|Belgium|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova|Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)", re.I)
+          WATCHLIST = re.compile(r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)", re.I)
+          NON_EMEA_STRONG = re.compile(r"(American|United States|U\.?S\.?A\.?|U\.?S\.?|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru|Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|District Attorney|county sheriff|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,?\s*D\.?C\.?)", re.I)
+          EMEA_TLDS = (".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye")
+          EMEA_DOMAINS = ("bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com","aljazeera.com","al-monitor.com","timesofisrael.com","jpost.com","middleeastmonitor.com","aa.com.tr","trtworld.com","sky.com","skynews.com")
 
-    cands = [e for e in d.entries if qualifies(e)]
-    cands.sort(key=lambda e: (score(e), ts(e)), reverse=True)
-    top5 = cands[:5]
+          VIOLENCE = re.compile(r"\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\b", re.I)
+          CASUALTY = re.compile(r"\b(killed|dead|deaths|fatal|injured|wounded|casualties)\b", re.I)
+          TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\s+lanes\s+closed|carriageway\s+closed|road\s+closed|blocked|drone.*(airport|airspace)", re.I)
+          PROTEST   = re.compile(r"\b(protest|demonstration|march|strike|walkout|blockade)\b", re.I)
+          SCALE     = re.compile(r"mass (?:protest|demonstration)s?|nationwide|countrywide|tens? of thousands|hundreds? of (?:people|protesters)|general|national strike|roadblocks?|highways? blocked|airport (?:blocked|closed)", re.I)
+          ENFORCE   = re.compile(r"riot police|tear gas|water cannon|clashes with police|arrests?|detained", re.I)
+          GOV       = re.compile(r"curfew|state of emergency|martial law|emergency decree|security alert raised", re.I)
+          EVAC      = re.compile(r"evacuated|evacuation|terminal evacuated|station evacuated|building evacuated", re.I)
 
-    def domain(u):
-        try:
-            return urlparse(u).netloc.replace("www.","")
-        except Exception:
-            return "source"
+          def ts(e):
+              for k in ("published_parsed","updated_parsed"):
+                  v = getattr(e, k, None)
+                  if v: return time.mktime(v)
+              return time.time()
 
-    rows = []
-    for e in top5:
-        title = html.escape(getattr(e,'title',''))
-        link  = getattr(e,'link','')
-        text  = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
-        country = html.escape(infer_country(text, link))
-        src = html.escape(domain(link))
-        rows.append(f"<tr><td>{country}</td><td>{title}</td><td><a href='{html.escape(link)}'>{src}</a></td></tr>")
+          def is_emea(text, link):
+              t = text or ""
+              if NON_EMEA_STRONG.search(t) and not (EMEA_TERMS.search(t) or WATCHLIST.search(t)):
+                  return False
+              if WATCHLIST.search(t) or EMEA_TERMS.search(t):
+                  return True
+              try:
+                  host = urlparse(link).netloc.lower()
+                  if any(host.endswith(tld) for tld in EMEA_TLDS): return True
+                  if any(dom in host for dom in EMEA_DOMAINS): return True
+              except Exception:
+                  pass
+              return False
 
-    table_html = f"""
-    <!doctype html><meta charset='utf-8'>
-    <title>London RSOC — Watchlist Top 5 (table)</title>
-    <style>
-      body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px}}
-      table{{border-collapse:collapse;width:100%}}
-      th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}
-      th{{background:#f5f5f5;text-align:left}}
-      tr:nth-child(even){{background:#fafafa}}
-    </style>
-    <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
-    <table>
-      <thead><tr><th>Country</th><th>Headline</th><th>Source</th></tr></thead>
-      <tbody>
-        {''.join(rows) if rows else "<tr><td colspan='3'>No items in last 24h.</td></tr>"}
-      </tbody>
-    </table>
-    <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
-    """
-    os.makedirs("public", exist_ok=True)
-    open("public/watchlist_top5.html","w",encoding="utf-8").write(table_html)
+          def is_noise(text: str) -> bool:
+              t = (text or "").lower()
+              if any(rx.search(t) for rx in EXCL_RE): return True
+              if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE): return True
+              return False
 
-    now = time.time()
-    brief = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <rss version="2.0"><channel>
-    <title>London RSOC — Watchlist Top 5</title>
-    <link>{BASE}watchlist_top5.html</link>
-    <description>Top 5 watchlist-relevant items (see table)</description>
-    <language>en</language>
-    <item>
-      <title>Top 5 — open table</title>
-      <link>{BASE}watchlist_top5.html</link>
-      <description>Open the table view for Country · Headline · Source.</description>
-      <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
-    </item>
-    </channel></rss>"""
-    open("public/brief.xml","w",encoding="utf-8").write(brief)
-    PY
+          def qualifies(e):
+              t_ = ts(e)
+              if t_ < cutoff: return False
+              title = getattr(e,'title',''); summary = getattr(e,'summary',''); link = getattr(e,'link','')
+              text = f"{title} {summary}"
+              if is_noise(text): return False
+              if not is_emea(text, link): return False
+              return bool(VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or PROTEST.search(text))
+
+          def score(e):
+              text = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              s = 0
+              if VIOLENCE.search(text): s += 90
+              if CASUALTY.search(text): s += 35
+              if TRANS_HARD.search(text): s += 70
+              if PROTEST.search(text): s += 55
+              if SCALE.search(text): s += 35
+              if ENFORCE.search(text): s += 30
+              if GOV.search(text): s += 40
+              if EVAC.search(text): s += 50
+              age_h = (time.time() - ts(e))/3600
+              s += 10 if age_h <= 6 else (5 if age_h <= 24 else 0)
+              return s
+
+          COUNTRY_PATTERNS = [
+            ("United Kingdom", re.compile(r"\b(uk|united kingdom|britain|english|scottish|welsh|london|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|paddington|king'?s cross|st\s*pancras|waterloo|victoria|liverpool street|london bridge|euston)\b", re.I)),
+            ("France",         re.compile(r"\b(france|paris|cdg|charles de gaulle|orly|ory|gare du nord|gare de l'[eé]st|gare de lyon|montparnasse|saint[- ]lazare|austerlitz)\b", re.I)),
+            ("Germany",        re.compile(r"\b(germany|berlin|hamburg|ber airport|berlin hbf|hamburg hbf)\b", re.I)),
+            ("Netherlands",    re.compile(r"\b(netherlands|amsterdam|eindhoven|schiphol|ams|amsterdam centraal|eindhoven centraal|ein)\b", re.I)),
+            ("Switzerland",    re.compile(r"\b(switzerland|zurich|zürich|zrh|zurich hb|zürich hb|yverdon-les-bains)\b", re.I)),
+            ("Austria",        re.compile(r"\b(austria|vienna|wien hbf|vienna hbf|vie)\b", re.I)),
+            ("Denmark",        re.compile(r"\b(denmark|copenhagen|københavn|kobenhavn|cph|kobenhavn h|københavn h)\b", re.I)),
+            ("Norway",         re.compile(r"\b(norway|oslo|oslo s|gardermoen|osl)\b", re.I)),
+            ("Sweden",         re.compile(r"\b(sweden|stockholm|arlanda|arn|stockholm central)\b", re.I)),
+            ("Ukraine",        re.compile(r"\b(ukraine|kyiv|kiev|boryspil|kbp|zhuliany|iev|kyiv[- ]pasazhyrskyi)\b", re.I)),
+            ("Qatar",          re.compile(r"\b(qatar|doha|hamad international|doh|msheireb)\b", re.I)),
+            ("Saudi Arabia",   re.compile(r"\b(saudi arabia|riyadh|king khalid international|ruh|riyadh metro)\b", re.I)),
+            ("United Arab Emirates", re.compile(r"\b(united arab emirates|uae|dubai|dxb|al maktoum|dwc|burjuman)\b", re.I)),
+            ("Israel/Palestinian Territories", re.compile(r"\b(israel|palestine|gaza|west bank|tel[- ]?aviv|jerusalem|ben gurion|tlv)\b", re.I)),
+            ("Morocco",        re.compile(r"\b(morocco|rabat|casablanca|marrakech|tangier|fes|agadir)\b", re.I)),
+          ]
+
+          def infer_country(text, link):
+              t = text or ""
+              for name, rx in COUNTRY_PATTERNS:
+                  if rx.search(t): return name
+              try:
+                  host = urlparse(link).netloc.lower()
+                  if host.endswith(".il"): return "Israel/Palestinian Territories"
+                  if host.endswith(".uk"): return "United Kingdom"
+                  if host.endswith(".fr"): return "France"
+                  if host.endswith(".de"): return "Germany"
+                  if host.endswith(".nl"): return "Netherlands"
+                  if host.endswith(".ch"): return "Switzerland"
+                  if host.endswith(".at"): return "Austria"
+                  if host.endswith(".dk"): return "Denmark"
+                  if host.endswith(".no"): return "Norway"
+                  if host.endswith(".se"): return "Sweden"
+                  if host.endswith(".ua"): return "Ukraine"
+                  if host.endswith(".qa"): return "Qatar"
+                  if host.endswith(".sa"): return "Saudi Arabia"
+                  if host.endswith(".ae"): return "United Arab Emirates"
+                  if host.endswith(".ma"): return "Morocco"
+              except Exception:
+                  pass
+              return "—"
+
+          cands = [e for e in d.entries if qualifies(e)]
+          cands.sort(key=lambda e: (score(e), ts(e)), reverse=True)
+          top5 = cands[:5]
+
+          def domain(u):
+              try:
+                  return urlparse(u).netloc.replace("www.","")
+              except Exception:
+                  return "source"
+
+          rows = []
+          for e in top5:
+              title = html.escape(getattr(e,'title',''))
+              link  = getattr(e,'link','')
+              text  = f"{getattr(e,'title','')} {getattr(e,'summary','')}"
+              country = html.escape(infer_country(text, link))
+              src = html.escape(domain(link))
+              rows.append(f"<tr><td>{country}</td><td>{title}</td><td><a href='{html.escape(link)}'>{src}</a></td></tr>")
+
+          table_html = f"""
+          <!doctype html><meta charset='utf-8'>
+          <title>London RSOC — Watchlist Top 5 (table)</title>
+          <style>
+            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px}}
+            table{{border-collapse:collapse;width:100%}}
+            th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}
+            th{{background:#f5f5f5;text-align:left}}
+            tr:nth-child(even){{background:#fafafa}}
+          </style>
+          <h1>London RSOC — Watchlist Top 5 (last 24h)</h1>
+          <table>
+            <thead><tr><th>Country</th><th>Headline</th><th>Source</th></tr></thead>
+            <tbody>
+              {''.join(rows) if rows else "<tr><td colspan='3'>No items in last 24h.</td></tr>"}
+            </tbody>
+          </table>
+          <p>Full feed: <a href='emea-filtered.xml'>emea-filtered.xml</a></p>
+          """
+          os.makedirs("public", exist_ok=True)
+          open("public/watchlist_top5.html","w",encoding="utf-8").write(table_html)
+
+          now = time.time()
+          brief = f"""<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0"><channel>
+          <title>London RSOC — Watchlist Top 5</title>
+          <link>{BASE}watchlist_top5.html</link>
+          <description>Top 5 watchlist-relevant items (see table)</description>
+          <language>en</language>
+          <item>
+            <title>Top 5 — open table</title>
+            <link>{BASE}watchlist_top5.html</link>
+            <description>Open the table view for Country · Headline · Source.</description>
+            <pubDate>{time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(now))}</pubDate>
+          </item>
+          </channel></rss>"""
+          open("public/brief.xml","w",encoding="utf-8").write(brief)
+          PY
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

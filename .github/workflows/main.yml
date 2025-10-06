@@ -48,31 +48,46 @@ jobs:
           d = feedparser.parse(FEED_PATH)
           cutoff = time.time() - 24*3600
 
-          # --- GEO GUARD (strict) ---
-          EMEA_TERMS = re.compile(
-            r"(Europe|EU|European Union|Schengen|Eurozone|Middle East|Gulf|Levant|Maghreb|North Africa|"
-            r"UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Austria|Switzerland|Netherlands|Belgium|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova|"
-            r"Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)",
-            re.I
-          )
-          WATCHLIST = re.compile(
-            r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|"
-            r"stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|"
-            r"heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|"
-            r"gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)",
-            re.I,
-          )
-          NON_EMEA_STRONG = re.compile(
-            r"(American|United States|U\.?S\.?A\.?|U\.?S\.?|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru|"
-            r"Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|District Attorney|county sheriff|"
-            r"Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|"
-            r"New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,?\s*D\.?C\.?)",
-            re.I
-          )
-          EMEA_TLDS = (".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye")
-          EMEA_DOMAINS = ("bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com","timesofisrael.com","jpost.com","middleeastmonitor.com","aa.com.tr","aljazeera.com","sky.com","skynews.com","reuters.com","afp.com","apnews.com","cnn.com","trtworld.com")
+          # --- Noise filters (generic) ---
+          EXCLUDE_PATTERNS = [
+            r"\b(sport|sports|football|soccer|rugby|tennis|golf|cricket|formula\s?1|f1|motogp|basketball|nba|hockey|nhl|baseball|mlb|boxing|mma|ufc|athletics|marathon|cycling|handball|volleyball|badminton|snooker|darts)\b",
+            r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|manager|coach|striker|midfielder|defender|goalkeeper|goal|assist|offside|penalt(y|ies)|red card|yellow card|line[- ]?up|result|scoreline|standings|table)\b",
+            r"\b(fútbol|futbol|calcio|voetbal|fotball|fotboll|bundesliga|ligue\s?1|premier league|la liga|serie\s?a|eredivisie|champions league|europa league)\b",
+            r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|music|movie|film|tv|series|theatre|theater|gaming|streaming|review|trailer|box office)\b",
+            r"\b(award|awards|festival|fashion week|premiere|concert|tour)\b",
+          ]
+          FIN_MARKET_ONLY = [
+            r"\b(stocks?|shares?|equities?|indexes?|indices|index|bonds?|bond yields?|yields?)\b",
+            r"\b(currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|oil price|gold price)\b",
+            r"\b(markets?|bourses?|exchanges?)\b",
+            r"\b(rall(?:y|ies)|surge|plunge|slide|gain|rise|fall|advance|retreat|extend gains|close[sd]? higher|close[sd]? lower|open[sd]? (?:higher|lower))\b",
+            r"\b(earnings|results|quarterly|q[1-4]|full[- ]year|guidance|analyst rating|downgrade|upgrade|ipo|initial public offering|dividend)\b",
+            r"\b(dow jones|nasdaq|s&?p\s*500|ftse|dax|cac\s*40|nikkei|hang seng|sensex|kospi|topix)\b",
+          ]
+          FIN_SECURITY_EXCEPTIONS = [
+            r"\b(sanction|export control|tariff|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
+            r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
+            r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
+            r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
+            r"\b(explosion|blast|attack|shooting|bomb|grenade|kidnap|hostage|terror|rocket|missile|drone)\b",
+            r"\b(cyber|ransomware|ddos|data breach|hacked)\b",
+          ]
+          EXCL_RE = [re.compile(p, re.I) for p in EXCLUDE_PATTERNS]
+          FIN_MARKET_ONLY_RE = [re.compile(p, re.I) for p in FIN_MARKET_ONLY]
+          FIN_SECURITY_EXC_RE = [re.compile(p, re.I) for p in FIN_SECURITY_EXCEPTIONS]
+          def is_noise(text: str) -> bool:
+              t = (text or "").lower()
+              if any(rx.search(t) for rx in EXCL_RE): return True
+              if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE): return True
+              return False
 
-          # --- SIGNAL PATTERNS (protests strongly boosted) ---
+          # --- GEO guard (strict) + signals ---
+          EMEA_TERMS = re.compile(r"(Europe|EU|European Union|Schengen|Eurozone|Middle East|Gulf|Levant|Maghreb|North Africa|UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Austria|Switzerland|Netherlands|Belgium|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova|Israel|Palestine|Gaza|West Bank|Lebanon|Syria|Jordan|Egypt|Turkey|Türkiye|Cyprus|Qatar|Saudi Arabia|United Arab Emirates|UAE|Bahrain|Kuwait|Oman|Yemen|Iraq|Iran|Libya|Tunisia|Algeria|Morocco)", re.I)
+          WATCHLIST = re.compile(r"(london|plymouth|sheffield|abingdon|kyiv|kiev|doha|riyadh|dubai|zurich|yverdon-les-bains|stockholm|oslo|copenhagen|vienna|eindhoven|amsterdam|tel\s*-?\s*aviv|jerusalem|hamburg|berlin|paris|heathrow|lhr|gatwick|lgw|stansted|stn|luton|ltn|london city|lcy|cdg|charles de gaulle|orly|ory|gare du nord|schiphol|ams|zrh|vie|cph|arn|osl|tlv)", re.I)
+          NON_EMEA_STRONG = re.compile(r"(American|United States|U\.?S\.?A\.?|U\.?S\.?|Canada|Canadian|Mexico|Mexican|Brazil|Brazilian|Argentina|Argentinian|Chile|Peru|Republican|Democrat|GOP|Congress|Senate|House of Representatives|Supreme Court|SCOTUS|District Attorney|county sheriff|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Miami|Atlanta|Washington,?\s*D\.?C\.?)", re.I)
+          EMEA_TLDS = (".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye")
+          EMEA_DOMAINS = ("bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com","aljazeera.com","al-monitor.com","timesofisrael.com","jpost.com","middleeastmonitor.com","aa.com.tr","trtworld.com","sky.com","skynews.com")
+
           VIOLENCE = re.compile(r"\b(stabbing|knife attack|shooting|gunfire|shots fired|explosion|blast|bomb|grenade|arson|riots?|clashes|unrest|hostage|kidnap|terror)\b", re.I)
           CASUALTY = re.compile(r"\b(killed|dead|deaths|fatal|injured|wounded|casualties)\b", re.I)
           TRANS_HARD = re.compile(r"(airport|airspace|runway|rail|train|metro|tram|port|harbour|harbor|ferry).*?(closed|suspended|halted|blocked|shutdown)|all\s+lanes\s+closed|carriageway\s+closed|road\s+closed|blocked|drone.*(airport|airspace)", re.I)
@@ -107,6 +122,7 @@ jobs:
               if t_ < cutoff: return False
               title = getattr(e,'title',''); summary = getattr(e,'summary',''); link = getattr(e,'link','')
               text = f"{title} {summary}"
+              if is_noise(text): return False
               if not is_emea(text, link): return False
               return bool(VIOLENCE.search(text) or CASUALTY.search(text) or TRANS_HARD.search(text) or PROTEST.search(text))
 

@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-London RSOC News Monitor — EMEA-focused RSS relay (v2.6, EN-only, strict EMEA + protest boost)
+London RSOC News Monitor — EMEA-focused RSS relay (v2.7, EN-only, strict EMEA + protest/incident boost)
 
 - Aggregates curated RSS sources; emphasises EMEA (Europe, Middle East, North Africa)
 - English-language sources only (or English editions)
-- Signal-based scoring for violence/unrest, HARD transport, cyber, hazards
+- High-signal gate: only incidents (protests/strikes/violence/hard-transport/cyber/hazards)
 - Strong boost for protests/demonstrations/strikes, enforcement, curfews, evacuations
 - Strict geographic gating (blocks US/AMER/APAC unless explicit EMEA evidence)
 - Meteoalarm per-country allow-list with Orange/Red-only policy
 - Israel HFC (Oref) rocket siren fetcher (JSON)
-- National Highways REMOVED entirely; ERCC Flash excluded
+- National Highways & ERCC Flash excluded
 - Hidden weighting: public RSS shows clean titles (no tiers/scores)
 """
 from __future__ import annotations
+
 import argparse
 import hashlib
 import html
@@ -23,8 +24,8 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Tuple
 from difflib import SequenceMatcher
+from typing import Iterable, List, Tuple
 from urllib.parse import urlparse
 
 import feedparser
@@ -49,18 +50,18 @@ NEWS_FEEDS = [
     "https://rss.dw.com/rdf/rss-en-all",
     "https://news.sky.com/feeds/rss/world.xml",
     "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://feeds.npr.org/1004/rss.xml",                     # NPR World (EN)
+    "https://feeds.npr.org/1004/rss.xml",
 
     # Israel / Middle East (English)
     "https://www.timesofisrael.com/feed/",
     "https://www.jpost.com/rss",
-    "https://www.al-monitor.com/rss",                         # Al-Monitor (EN)
+    "https://www.al-monitor.com/rss",
     "https://www.middleeastmonitor.com/feed/",
 
-    # Global desks (allowed, but EMEA-gated by strict filters)
-    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", # NYT World (EN)
-    "https://feeds.nbcnews.com/nbcnews/public/news",          # NBC News Top (EN)
-    "https://www.cnbc.com/id/100727362/device/rss/rss.html",  # CNBC World (EN)
+    # Global desks (allowed, but must pass strict EMEA gate)
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://feeds.nbcnews.com/nbcnews/public/news",
+    "https://www.cnbc.com/id/100727362/device/rss/rss.html",
 
     # Anadolu Agency (English)
     "https://www.aa.com.tr/en/rss/default?cat=guncel",
@@ -69,18 +70,15 @@ NEWS_FEEDS = [
 
 ALERT_FEEDS = [
     "https://www.europol.europa.eu/rss/news",
-    "https://www.gdacs.org/XML/RSS.xml",   # working GDACS feed
+    "https://www.gdacs.org/XML/RSS.xml",   # Working GDACS roll-up
     # (No National Highways, no ERCC Flash)
 ]
 
 # Aggregate into [(kind, url)]
 ALL_FEEDS: List[Tuple[str, str]] = []
-for url in MA_FEEDS:
-    ALL_FEEDS.append(("meteoalarm", url))
-for url in ALERT_FEEDS:
-    ALL_FEEDS.append(("alerts", url))
-for url in NEWS_FEEDS:
-    ALL_FEEDS.append(("news", url))
+ALL_FEEDS += [("meteoalarm", u) for u in MA_FEEDS]
+ALL_FEEDS += [("alerts", u) for u in ALERT_FEEDS]
+ALL_FEEDS += [("news", u) for u in NEWS_FEEDS]
 
 # ------------------------------
 # Config: Scoring & GEO (internal/hidden)
@@ -105,7 +103,7 @@ EXCLUDE_PATTERNS = [
     r"\bhair transplant|cosmetic surgery|wellness|diet|fitness|beekeeping\b",
 ]
 
-# Financial market noise: generic price/earnings/indices chatter (allow exceptions below)
+# Financial market noise (allow only if security-impact exceptions appear)
 FIN_MARKET_ONLY = [
     r"\b(stocks?|shares?|equities?|indexes?|indices|index|bonds?|bond yields?|yields?)\b",
     r"\b(currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|oil price|gold price)\b",
@@ -114,7 +112,6 @@ FIN_MARKET_ONLY = [
     r"\b(earnings|results|quarterly|q[1-4]|full[- ]year|guidance|analyst rating|downgrade|upgrade|ipo|initial public offering|dividend)\b",
     r"\b(dow jones|nasdaq|s&?p\s*500|ftse|dax|cac\s*40|nikkei|hang seng|sensex|kospi|topix)\b",
 ]
-# If any of these appear, we still allow the item even if it mentions markets
 FIN_SECURITY_EXCEPTIONS = [
     r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
     r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
@@ -146,7 +143,7 @@ PROTEST_SCALE = [
     r"nationwide|countrywide",
     r"tens? of thousands|hundreds? of (?:people|protesters)",
     r"general strike|national strike",
-    r"roadblocks?|highways? blocked|airport (?:blocked|closed)|ports? blocked"
+    r"roadblocks?|highways? blocked|airport (?:blocked|closed)|ports? blocked",
 ]
 ENFORCEMENT = [r"riot police|tear gas|water cannon|baton|clashes with police|arrests?|detained|detentions?"]
 GOV_MEASURES = [r"curfew|state of emergency|martial law|emergency decree|security alert raised"]
@@ -205,19 +202,19 @@ US_BIG_CITIES = [
 
 # EMEA domains for domain-based EMEA inference (keep to EMEA-centric English outlets)
 EMEA_OUTLET_DOMAINS = (
-    "bbc.co.uk","bbc.com","france24.com","euronews.com","dw.com",
-    "aljazeera.com","al-monitor.com",
-    "timesofisrael.com","jpost.com","middleeastmonitor.com",
-    "aa.com.tr","trtworld.com",
-    "sky.com","skynews.com",
+    "bbc.co.uk", "bbc.com", "france24.com", "euronews.com", "dw.com",
+    "aljazeera.com", "al-monitor.com",
+    "timesofisrael.com", "jpost.com", "middleeastmonitor.com",
+    "aa.com.tr", "trtworld.com",
+    "sky.com", "skynews.com",
 )
 # NOTE: Do NOT include nytimes.com/nbcnews.com/cnbc.com here so they must have explicit EMEA evidence.
 
 EMEA_TLDS = (
-    ".uk",".ie",".fr",".de",".nl",".be",".lu",".dk",".no",".se",".fi",".is",".ch",".at",
-    ".it",".es",".pt",".pl",".cz",".sk",".hu",".ro",".bg",".gr",".si",".hr",".ba",".rs",
-    ".me",".al",".mk",".lt",".lv",".ee",".ua",".md",".tr",".cy",".il",".ps",".lb",".sy",
-    ".jo",".eg",".ma",".dz",".tn",".ly",".sa",".qa",".ae",".kw",".bh",".om",".ye",
+    ".uk", ".ie", ".fr", ".de", ".nl", ".be", ".lu", ".dk", ".no", ".se", ".fi", ".is", ".ch", ".at",
+    ".it", ".es", ".pt", ".pl", ".cz", ".sk", ".hu", ".ro", ".bg", ".gr", ".si", ".hr", ".ba", ".rs",
+    ".me", ".al", ".mk", ".lt", ".lv", ".ee", ".ua", ".md", ".tr", ".cy", ".il", ".ps", ".lb", ".sy",
+    ".jo", ".eg", ".ma", ".dz", ".tn", ".ly", ".sa", ".qa", ".ae", ".kw", ".bh", ".om", ".ye",
 )
 GEO_STRICT = True
 
@@ -229,7 +226,7 @@ MIN_SCORE_TO_INCLUDE = 25
 REQUIRE_METEO_ORANGE = True
 
 URGENT_TERMS = [r"explosion|mass casualty|airport closed|airspace closed|terror attack|multiple fatalities"]
-PUBLIC_LABELS = False
+PUBLIC_LABELS = False  # (kept for API compatibility; not used in public titles)
 
 # ------------------------------
 # Helpers / Regex compiles
@@ -253,15 +250,15 @@ METEO_ORANGE_RE = _compile(METEO_ORANGE)
 METEO_YELLOW_RE = _compile(METEO_YELLOW)
 HAZARDS_RE = _compile(HAZARDS)
 PROTEST_SCALE_RE = _compile(PROTEST_SCALE)
-ENFORCEMENT_RE   = _compile(ENFORCEMENT)
-GOV_MEASURES_RE  = _compile(GOV_MEASURES)
-EVACUATION_RE    = _compile(EVACUATION)
+ENFORCEMENT_RE = _compile(ENFORCEMENT)
+GOV_MEASURES_RE = _compile(GOV_MEASURES)
+EVACUATION_RE = _compile(EVACUATION)
 WATCHLIST_RE = _compile(WATCHLIST)
 WATCHLIST_HUBS_RE = _compile(WATCHLIST_HUBS)
 EMEA_ALLOW_RE = _compile(EMEA_ALLOW)
 NON_EMEA_RE = _compile(NON_EMEA_BLOCK)
 US_POLITICS_RE = _compile(US_POLITICS)
-US_STATES_RE   = _compile(US_STATES)
+US_STATES_RE = _compile(US_STATES)
 US_BIG_CITIES_RE = _compile(US_BIG_CITIES)
 URGENT_RE = _compile(URGENT_TERMS)
 
@@ -270,8 +267,10 @@ def now_ts() -> float:
 
 def recency_bonus(published_ts: float) -> int:
     hours = (now_ts() - published_ts) / 3600.0
-    if hours <= 6:  return 10
-    if hours <= 24: return 5
+    if hours <= 6:
+        return 10
+    if hours <= 24:
+        return 5
     return 0
 
 # Title normalisation for de-duplication
@@ -288,10 +287,10 @@ def normalize_title(s: str) -> str:
 
 def is_noise(text: str) -> bool:
     t = (text or "").lower()
-    # 1) broad topical noise (sports/lifestyle/etc.)
+    # 1) Sports/entertainment/etc.
     if any(rx.search(t) for rx in EXCL_RE):
         return True
-    # 2) market-movement chatter with no security relevance
+    # 2) Market-movement chatter with no security relevance
     if any(rx.search(t) for rx in FIN_MARKET_ONLY_RE) and not any(rx.search(t) for rx in FIN_SECURITY_EXC_RE):
         return True
     return False
@@ -305,28 +304,37 @@ def is_emea_relevant(text: str, link: str = "") -> bool:
             return False
 
     if not GEO_STRICT:
-        if any(rx.search(t) for rx in EMEA_ALLOW_RE): return True
-        if any(rx.search(t) for rx in NON_EMEA_RE):   return False
+        if any(rx.search(t) for rx in EMEA_ALLOW_RE):
+            return True
+        if any(rx.search(t) for rx in NON_EMEA_RE):
+            return False
         return True
 
     # Strict mode: require EMEA evidence
-    if any(rx.search(t) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE)): return True
-    if any(rx.search(t) for rx in EMEA_ALLOW_RE): return True
+    if any(rx.search(t) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE)):
+        return True
+    if any(rx.search(t) for rx in EMEA_ALLOW_RE):
+        return True
     host = ""
     try:
         host = urlparse(link).netloc.lower()
     except Exception:
         pass
     if host:
-        if any(host.endswith(tld) for tld in EMEA_TLDS): return True
-        if any((host.endswith(dom) or (dom in host)) for dom in EMEA_OUTLET_DOMAINS): return True
+        if any(host.endswith(tld) for tld in EMEA_TLDS):
+            return True
+        if any((host.endswith(dom) or (dom in host)) for dom in EMEA_OUTLET_DOMAINS):
+            return True
     return False
 
 def meteo_severity(text: str) -> int:
     t = text.lower()
-    if any(rx.search(t) for rx in METEO_RED_RE): return 70
-    if any(rx.search(t) for rx in METEO_ORANGE_RE): return 40
-    if any(rx.search(t) for rx in METEO_YELLOW_RE): return 0 if REQUIRE_METEO_ORANGE else 15
+    if any(rx.search(t) for rx in METEO_RED_RE):
+        return 70
+    if any(rx.search(t) for rx in METEO_ORANGE_RE):
+        return 40
+    if any(rx.search(t) for rx in METEO_YELLOW_RE):
+        return 0 if REQUIRE_METEO_ORANGE else 15
     return 0
 
 def watchlist_bonus(text: str) -> int:
@@ -335,10 +343,13 @@ def watchlist_bonus(text: str) -> int:
     return 0
 
 def is_high_signal(text: str, feed_kind: str) -> bool:
+    """
+    Gatekeeper: only allow items that clearly represent incidents/disruption.
+    """
     t = (text or "").lower()
     if any(rx.search(t) for rx in (VIOLENCE_RE + CASUALTIES_RE + PROTEST_RE + TRANS_HARD_RE + CYBER_RE)):
         return True
-    # Hazards: include only if Meteoalarm orange/red or hazard terms
+    # Hazards: include only if Meteoalarm orange/red or broad hazard terms
     if feed_kind == "meteoalarm":
         return meteo_severity(t) >= 40
     if any(rx.search(t) for rx in HAZARDS_RE):
@@ -368,23 +379,34 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     score = 0
 
     # Violence / terror
-    if any(rx.search(t) for rx in TERROR_RE):   score += 90
-    if any(rx.search(t) for rx in VIOLENCE_RE): score += 85
-    if any(rx.search(t) for rx in CASUALTIES_RE): score += 35
+    if any(rx.search(t) for rx in TERROR_RE):
+        score += 90
+    if any(rx.search(t) for rx in VIOLENCE_RE):
+        score += 85
+    if any(rx.search(t) for rx in CASUALTIES_RE):
+        score += 35
 
     # Protests & policing / govt measures / evacuations (boosted)
-    if any(rx.search(t) for rx in PROTEST_RE):        score += 55
-    if any(rx.search(t) for rx in PROTEST_SCALE_RE):  score += 35
-    if any(rx.search(t) for rx in ENFORCEMENT_RE):    score += 30
-    if any(rx.search(t) for rx in GOV_MEASURES_RE):   score += 40
-    if any(rx.search(t) for rx in EVACUATION_RE):     score += 50
+    if any(rx.search(t) for rx in PROTEST_RE):
+        score += 55
+    if any(rx.search(t) for rx in PROTEST_SCALE_RE):
+        score += 35
+    if any(rx.search(t) for rx in ENFORCEMENT_RE):
+        score += 30
+    if any(rx.search(t) for rx in GOV_MEASURES_RE):
+        score += 40
+    if any(rx.search(t) for rx in EVACUATION_RE):
+        score += 50
 
     # Transport
-    if any(rx.search(t) for rx in TRANS_HARD_RE): score += 70
-    if any(rx.search(t) for rx in TRANS_SOFT_RE): score += 25
+    if any(rx.search(t) for rx in TRANS_HARD_RE):
+        score += 70
+    if any(rx.search(t) for rx in TRANS_SOFT_RE):
+        score += 25
 
     # Cyber
-    if any(rx.search(t) for rx in CYBER_RE): score += 50
+    if any(rx.search(t) for rx in CYBER_RE):
+        score += 50
 
     # Weather / hazards
     met_sev = meteo_severity(t)
@@ -403,7 +425,7 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     ]:
         for m in rx.finditer(t):
             try:
-                n = int(m.group(1).replace(',', ''))
+                n = int(m.group(1).replace(",", ""))
                 score += min(cap, max(5, n * mult))
             except Exception:
                 pass
@@ -421,9 +443,12 @@ def incident_score(text: str, feed_kind: str, published_ts: float, source: str =
     return score, urgent
 
 def to_priority(score: int) -> int:
-    if score >= P1_THRESHOLD: return 1
-    if score >= P2_THRESHOLD: return 2
-    if score >= P3_THRESHOLD: return 3
+    if score >= P1_THRESHOLD:
+        return 1
+    if score >= P2_THRESHOLD:
+        return 2
+    if score >= P3_THRESHOLD:
+        return 3
     return 0
 
 # ------------------------------
@@ -509,9 +534,9 @@ def harvest() -> List[Item]:
 def build_feed(items: List[Item], title: str, homepage: str, replay: int = 0, reseed: str = "") -> str:
     fg = FeedGenerator()
     fg.title(title)
-    fg.link(href=homepage, rel='alternate')
-    fg.description('Merged & filtered EMEA alerts (internal scoring, clean titles)')
-    fg.language('en')
+    fg.link(href=homepage, rel="alternate")
+    fg.description("Merged & filtered EMEA alerts (internal scoring, clean titles)")
+    fg.language("en")
     now = datetime.now(timezone.utc)
     fg.updated(now)
 
@@ -519,7 +544,7 @@ def build_feed(items: List[Item], title: str, homepage: str, replay: int = 0, re
         if it.priority not in (1, 2, 3):
             continue
         fe = fg.add_entry()
-        fe.title(it.title)             # public: clean title only
+        fe.title(it.title)  # public: clean title only
         fe.link(href=it.link)
         desc = it.summary
         if it.source:
@@ -529,14 +554,14 @@ def build_feed(items: List[Item], title: str, homepage: str, replay: int = 0, re
             bumped = now + timedelta(seconds=(replay - idx))
             fe.pubDate(bumped)
             seed = reseed or now.strftime("%Y%m%d%H%M%S")
-            guid = hashlib.sha256((it.title + '|' + it.link + '|' + seed).encode('utf-8')).hexdigest()
+            guid = hashlib.sha256((it.title + '|' + it.link + '|' + seed).encode("utf-8")).hexdigest()
             fe.guid(guid, permalink=False)
         else:
             fe.pubDate(datetime.fromtimestamp(it.published_ts, tz=timezone.utc))
-            guid = hashlib.sha256((it.title + '|' + it.link).encode('utf-8')).hexdigest()
+            guid = hashlib.sha256((it.title + '|' + it.link).encode("utf-8")).hexdigest()
             fe.guid(guid, permalink=False)
 
-    return fg.rss_str(pretty=True).decode('utf-8')
+    return fg.rss_str(pretty=True).decode("utf-8")
 
 # ------------------------------
 # Israel Home Front Command (Oref)
@@ -561,9 +586,10 @@ def harvest_oref() -> List[Item]:
             except Exception:
                 continue
             now = datetime.now(timezone.utc)
+
             def _mk_item(title: str, link_text: str, when: float, details: str) -> Item:
                 text = f"{title} {details}"
-                score, urgent = incident_score(text, "alerts", when, "Israel HFC")
+                score, _urgent = incident_score(text, "alerts", when, "Israel HFC")
                 score = max(score, P1_THRESHOLD + 5)  # force P1
                 return Item(
                     title=title,
@@ -576,13 +602,15 @@ def harvest_oref() -> List[Item]:
                     priority=to_priority(score),
                     urgent=True,
                 )
-            # Common shapes
+
+            # Handle common response shapes
             if isinstance(js, dict) and js.get("data"):
                 data = js.get("data") or []
             elif isinstance(js, list):
                 data = js
             else:
                 data = []
+
             for entry in data:
                 cities = entry.get("data") or entry.get("cities") or entry.get("areas") or []
                 threat = entry.get("title") or entry.get("category") or "Rocket alert"
@@ -594,6 +622,7 @@ def harvest_oref() -> List[Item]:
                 cities_txt = ", ".join(cities) if isinstance(cities, list) else str(cities)
                 details = f"Threat: {threat}; Areas: {cities_txt}"
                 results.append(_mk_item(title=f"Rocket siren: {cities_txt or threat}", link_text=url, when=when, details=details))
+
             if results:
                 break
         except Exception:
